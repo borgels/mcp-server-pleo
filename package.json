@@ -4,6 +4,13 @@
   "description": "Policy-aware MCP server for the Pleo API.",
   "type": "module",
   "main": "./dist/stdio.js",
+  "exports": {
+    ".": "./dist/stdio.js",
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "default": "./dist/gateway.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -16,11 +23,12 @@
     "mcp-server-pleo": "./dist/stdio.js"
   },
   "scripts": {
-    "build": "tsup src/transports/stdio.ts src/transports/http.ts --format esm --dts --clean --sourcemap",
+    "build": "tsup src/transports/stdio.ts src/transports/http.ts src/gateway.ts --format esm --dts --clean --sourcemap",
     "dev": "tsx src/transports/stdio.ts",
     "dev:http": "tsx src/transports/http.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "prepare": "npm run build",
     "prepack": "npm run typecheck && npm test && npm run build",
     "smoke:live": "tsx test/live-smoke.ts"
   },
