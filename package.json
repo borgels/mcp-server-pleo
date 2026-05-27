@@ -34,7 +34,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Borgels/mcp-server-pleo.git"
+    "url": "git+https://github.com/borgels/mcp-server-pleo.git"
   },
   "keywords": [
     "mcp",
@@ -49,9 +49,9 @@
     "node": ">=20.11"
   },
   "bugs": {
-    "url": "https://github.com/Borgels/mcp-server-pleo/issues"
+    "url": "https://github.com/borgels/mcp-server-pleo/issues"
   },
-  "homepage": "https://github.com/Borgels/mcp-server-pleo#readme",
+  "homepage": "https://github.com/borgels/mcp-server-pleo#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
