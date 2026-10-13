@@ -199,6 +199,12 @@ Write flow:
 3. Call `pleo_commit_prepared_request` with the full prepared request, matching
    `confirmOperationHash`, and an `idempotencyKey`.
 
+Prepared requests are signed with HMAC-SHA256 and expire after 15 minutes. At
+commit the server verifies the signature, re-derives the operation from the
+method and path, and re-applies the write allowlist and policy file. Set
+`PLEO_PREPARE_SECRET` to share the signing key across server instances or
+restarts; when unset, a random per-process key is used.
+
 The idempotency key is stored only as a hash in the audit log. When provided,
 the server sends it upstream as `Idempotency-Key`.
 
@@ -212,7 +218,8 @@ the server sends it upstream as `Idempotency-Key`.
 - Optional JSONL audit logging stores hashed targets and hashed idempotency
   keys, not raw request bodies.
 - The Streamable HTTP transport binds to `127.0.0.1` by default.
-- Set `MCP_HTTP_TOKEN` to require bearer auth for HTTP transport access.
+- Set `MCP_HTTP_TOKEN` to require bearer auth for HTTP transport access. The
+  token is compared in constant time.
 - Set `MCP_ALLOWED_ORIGINS` for browser-based local clients. Without it,
   loopback origins are allowed and other origins are rejected.
 - `MCP_MAX_BODY_BYTES` defaults to `10485760` (10 MiB).

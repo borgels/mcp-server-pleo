@@ -12,8 +12,9 @@ import { paginationQuery, type PleoClient } from '../pleo/client.js';
 import { checkRequestPolicy, checkToolPolicy } from '../pleo/policy.js';
 import {
   assertAllowedReadPath,
-  assertPreparedRequestHash,
+  pathParam,
   preparePleoRequest,
+  verifyPreparedRequest,
 } from '../pleo/requests.js';
 
 const uuidSchema = z.string().trim().uuid();
@@ -44,6 +45,7 @@ const paginationInputShape = {
 const preparedRequestSchema = z.object({
   type: z.literal('pleo_prepared_request'),
   createdAt: z.string().trim().min(1),
+  expiresAt: z.string().trim().min(1),
   method: z.enum(['POST', 'PUT', 'PATCH']),
   path: z.string().trim().min(1),
   query: querySchema,
@@ -130,7 +132,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     },
     async input =>
       runAuditedTool('pleo_get_company', input, async () =>
-        jsonToolResult(await client.get(`/v1/companies/${input.companyId}`)),
+        jsonToolResult(await client.get(`/v1/companies/${pathParam(input.companyId)}`)),
       ),
   );
 
@@ -173,7 +175,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     },
     async input =>
       runAuditedTool('pleo_get_employee', input, async () =>
-        jsonToolResult(await client.get(`/v2/employees/${input.employeeId}`)),
+        jsonToolResult(await client.get(`/v2/employees/${pathParam(input.employeeId)}`)),
       ),
   );
 
@@ -268,7 +270,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     },
     async input =>
       runAuditedTool('pleo_get_vendor', input, async () =>
-        jsonToolResult(await client.get(`/v1/vendors/${input.vendorId}`)),
+        jsonToolResult(await client.get(`/v1/vendors/${pathParam(input.vendorId)}`)),
       ),
   );
 
@@ -309,7 +311,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     },
     async input =>
       runAuditedTool('pleo_get_export_job', input, async () =>
-        jsonToolResult(await client.get(`/v3/export-jobs/${input.jobId}`)),
+        jsonToolResult(await client.get(`/v3/export-jobs/${pathParam(input.jobId)}`)),
       ),
   );
 
@@ -329,7 +331,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     async input =>
       runAuditedTool('pleo_list_export_job_items', input, async () =>
         jsonToolResult(
-          await client.get(`/v3/export-jobs/${input.jobId}/items`, {
+          await client.get(`/v3/export-jobs/${pathParam(input.jobId)}/items`, {
             status: input.status,
             ...paginationQuery(input),
           }),
@@ -418,8 +420,8 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
         'pleo_commit_prepared_request',
         input,
         async () => {
-          assertPreparedRequestHash(input.preparedRequest, input.confirmOperationHash);
-          const decision = await checkRequestPolicy(input.preparedRequest);
+          const prepared = verifyPreparedRequest(input.preparedRequest, input.confirmOperationHash);
+          const decision = await checkRequestPolicy(prepared);
           if (!decision.allowed) {
             await writeAuditEvent({
               tool: 'pleo_commit_prepared_request',
@@ -433,10 +435,10 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
           }
 
           const result = await client.request({
-            method: input.preparedRequest.method,
-            path: input.preparedRequest.path,
-            query: input.preparedRequest.query,
-            body: input.preparedRequest.body,
+            method: prepared.method,
+            path: prepared.path,
+            query: prepared.query,
+            body: prepared.body,
             idempotencyKey: input.idempotencyKey,
           });
           return jsonToolResult(result);

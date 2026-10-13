@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { PleoHttpMethod } from './client.js';
 
 export interface PreparedPleoRequest {
   type: 'pleo_prepared_request';
   createdAt: string;
+  expiresAt: string;
   method: Exclude<PleoHttpMethod, 'GET' | 'DELETE'>;
   path: string;
   query: Record<string, unknown>;
@@ -26,12 +27,15 @@ export function preparePleoRequest(input: {
   }
 
   const path = normalizePath(input.path);
+  assertSafeRequestPath(path);
   const operation = `${method} ${operationPattern(path)}`;
   assertAllowedWriteOperation(operation);
 
+  const createdAt = new Date();
   const preparedWithoutHash = {
     type: 'pleo_prepared_request' as const,
-    createdAt: new Date().toISOString(),
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + PREPARED_REQUEST_TTL_MS).toISOString(),
     method,
     path,
     query: input.query ?? {},
@@ -46,26 +50,105 @@ export function preparePleoRequest(input: {
   };
 }
 
-export function assertPreparedRequestHash(prepared: PreparedPleoRequest, confirmOperationHash: string): void {
-  const actualHash = hashPreparedRequest(prepared);
-  if (actualHash !== prepared.operationHash || actualHash !== confirmOperationHash) {
+/**
+ * Verify a prepared request at commit time. The request must carry a valid
+ * HMAC signature from this server, match the confirmation hash, be unexpired,
+ * and its operation is re-derived from method + path and re-checked against
+ * the write allowlist. Returns the request with the derived operation.
+ */
+export function verifyPreparedRequest(
+  prepared: PreparedPleoRequest,
+  confirmOperationHash: string,
+  now: Date = new Date(),
+): PreparedPleoRequest {
+  const expected = Buffer.from(hashPreparedRequest(prepared), 'hex');
+  const given = Buffer.from(String(prepared.operationHash ?? ''), 'hex');
+  const confirm = Buffer.from(String(confirmOperationHash ?? ''), 'hex');
+  if (
+    expected.length !== given.length ||
+    !timingSafeEqual(expected, given) ||
+    expected.length !== confirm.length ||
+    !timingSafeEqual(expected, confirm)
+  ) {
     throw new Error('Prepared request hash mismatch. Re-run preparation and inspect the operation.');
   }
+
+  const expiresAt = Date.parse(prepared.expiresAt);
+  if (!Number.isFinite(expiresAt) || now.getTime() > expiresAt) {
+    throw new Error('Prepared request has expired (15 minutes). Re-run preparation.');
+  }
+
+  const method = String(prepared.method).toUpperCase();
+  if (!isWritableMethod(method)) {
+    throw new Error('Prepared Pleo requests only support POST, PUT, and PATCH.');
+  }
+
+  const path = normalizePath(prepared.path);
+  assertSafeRequestPath(path);
+  const operation = `${method} ${operationPattern(path)}`;
+  if (operation !== prepared.operation) {
+    throw new Error('Prepared request operation does not match its method and path.');
+  }
+  assertAllowedWriteOperation(operation);
+
+  return { ...prepared, method, path, operation };
+}
+
+/** @deprecated Use verifyPreparedRequest, which also re-derives the operation. */
+export function assertPreparedRequestHash(prepared: PreparedPleoRequest, confirmOperationHash: string): void {
+  verifyPreparedRequest(prepared, confirmOperationHash);
 }
 
 export function assertAllowedReadPath(path: string): void {
-  const pattern = operationPattern(normalizePath(path));
+  const normalized = normalizePath(path);
+  assertSafeRequestPath(normalized);
+  const pattern = operationPattern(normalized);
   const allowed = READ_PATH_PATTERNS.some(candidate => candidate === pattern);
   if (!allowed) {
     throw new Error(`Pleo read path is not allowlisted: ${path}`);
   }
 }
 
+/**
+ * Reject paths that could change meaning after URL parsing: query/fragment
+ * delimiters, dot segments, backslashes, and encoded dots or slashes.
+ */
+export function assertSafeRequestPath(path: string): void {
+  if (/[?#\\]/.test(path) || /%2e|%2f|%5c/i.test(path) || path.split('/').some(segment => segment === '..' || segment === '.')) {
+    throw new Error('Pleo request path contains disallowed characters or segments.');
+  }
+}
+
+/**
+ * Guard and encode one caller-supplied path parameter.
+ */
+export function pathParam(value: string): string {
+  const text = String(value);
+  if (
+    text === '' ||
+    text === '.' ||
+    text === '..' ||
+    /[/\\?#]/.test(text) ||
+    /%2e|%2f|%5c/i.test(text)
+  ) {
+    throw new Error('Invalid path parameter.');
+  }
+  return encodeURIComponent(text);
+}
+
 export function hashPreparedRequest(
   prepared: Omit<PreparedPleoRequest, 'operationHash'> | PreparedPleoRequest,
 ): string {
   const { operationHash: _operationHash, ...payload } = prepared as PreparedPleoRequest;
-  return stableHash(payload);
+  return createHmac('sha256', prepareSecret()).update(stableJson(payload)).digest('hex');
+}
+
+const PREPARED_REQUEST_TTL_MS = 15 * 60 * 1000;
+const processSecret = randomBytes(32);
+
+function prepareSecret(): Buffer {
+  const configured = process.env.PLEO_PREPARE_SECRET;
+  return configured ? Buffer.from(configured, 'utf8') : processSecret;
 }
 
 export function normalizePath(path: string): string {
@@ -78,7 +161,7 @@ export function normalizePath(path: string): string {
 
 export function operationPattern(path: string): string {
   return normalizePath(path).replace(
-    /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=\/|$)/gi,
+    /\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=[/:]|$)/gi,
     '/:id',
   );
 }
@@ -136,8 +219,4 @@ function sortValue(value: unknown): unknown {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, item]) => [key, sortValue(item)]),
   );
-}
-
-function stableHash(value: unknown): string {
-  return createHash('sha256').update(stableJson(value)).digest('hex');
 }
