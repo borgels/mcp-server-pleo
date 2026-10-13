@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export class HttpRequestError extends Error {
@@ -31,9 +32,15 @@ export function assertAuthorized(req: IncomingMessage, config = getHttpConfig())
     return;
   }
 
-  if (req.headers.authorization !== `Bearer ${config.httpToken}`) {
+  if (!tokensEqual(req.headers.authorization ?? '', `Bearer ${config.httpToken}`)) {
     throw new HttpRequestError(401, 'Unauthorized');
   }
+}
+
+function tokensEqual(given: string, expected: string): boolean {
+  const givenDigest = createHash('sha256').update(given, 'utf8').digest();
+  const expectedDigest = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(givenDigest, expectedDigest);
 }
 
 export function assertAllowedOrigin(req: IncomingMessage): void {
