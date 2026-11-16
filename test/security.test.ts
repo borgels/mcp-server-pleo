@@ -143,10 +143,20 @@ describe('HTTP bearer token', () => {
   });
 
   it('rejects wrong or differently sized tokens without throwing type errors', () => {
-    process.env.MCP_HTTP_TOKEN = 'secret';
-    for (const authorization of ['Bearer secreT', 'Bearer s', 'Bearer secret-longer', '']) {
-      expect(() => assertAuthorized({ headers: { authorization } } as never)).toThrow(HttpRequestError);
+    const token = 'secret-0123456789abcdef0123456789';
+    const config = { host: '127.0.0.1', port: 0, maxBodyBytes: 1024, httpToken: token };
+    for (const authorization of [`Bearer ${token.toUpperCase()}`, 'Bearer s', `Bearer ${token}-longer`, '']) {
+      expect(() => assertAuthorized({ headers: { authorization } } as never, config)).toThrow(HttpRequestError);
     }
-    expect(() => assertAuthorized({ headers: { authorization: 'Bearer secret' } } as never)).not.toThrow();
+    expect(() => assertAuthorized({ headers: { authorization: `Bearer ${token}` } } as never, config)).not.toThrow();
+  });
+});
+
+describe('version', () => {
+  it('reports the package.json version', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { PACKAGE_VERSION } = await import('../src/version.js');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    expect(PACKAGE_VERSION).toBe(pkg.version);
   });
 });

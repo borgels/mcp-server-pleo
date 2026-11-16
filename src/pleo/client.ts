@@ -1,3 +1,4 @@
+import { readEnvInteger } from '../config-env.js';
 import { PleoHttpError } from '../errors.js';
 
 export type PleoHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -33,7 +34,7 @@ export class PleoClient {
     );
     assertSafeBaseUrl(this.baseUrl);
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? Number(process.env.PLEO_TIMEOUT_MS ?? 30_000);
+    this.timeoutMs = options.timeoutMs ?? readEnvInteger('PLEO_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 });
   }
 
   async get<T>(path: string, query?: Record<string, unknown>): Promise<T> {
@@ -68,6 +69,8 @@ export class PleoClient {
       method: request.method,
       headers,
       body: request.body === undefined ? undefined : JSON.stringify(request.body),
+      // Never follow redirects: credentials must only reach the configured API origin.
+      redirect: 'manual',
       signal: AbortSignal.timeout(this.timeoutMs),
     });
 
@@ -135,8 +138,18 @@ export function paginationQuery(input: PleoPaginationInput): Record<string, unkn
   };
 }
 
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/**
+ * Reads the response body. Redirects are refused (they are never followed),
+ * and error bodies are read only up to MAX_ERROR_BODY_BYTES.
+ */
 async function readResponseBody(response: Response): Promise<unknown> {
-  const text = await response.text();
+  if (response.status >= 300 && response.status < 400) {
+    await response.body?.cancel().catch(() => undefined);
+    return 'Redirect responses are not followed, so credentials are never sent to another host.';
+  }
+  const text = response.ok ? await response.text() : await readTextUpTo(response, MAX_ERROR_BODY_BYTES);
 
   if (!text) {
     return null;
@@ -152,6 +165,31 @@ async function readResponseBody(response: Response): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+/** Reads at most `limit` bytes of a response body as text and discards the rest. */
+async function readTextUpTo(response: Response, limit: number): Promise<string> {
+  if (!response.body) {
+    return '';
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < limit) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } catch {
+    // Report what arrived before the body failed.
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).subarray(0, limit).toString('utf8');
 }
 
 function appendQueryValue(searchParams: URLSearchParams, key: string, value: unknown): void {
