@@ -3,8 +3,9 @@
 TypeScript MCP server for the Pleo API. It is intentionally boring good: typed,
 documented, read-first, policy-aware, credential-sane, and audit-friendly.
 
-> **Disclaimer:** This is an independent, unofficial project by Borgels. Borgels
-> is not affiliated with, endorsed by, or supported by Pleo. "Pleo" and the Pleo
+This is an independent, unofficial project. It is not developed, endorsed or supported by Pleo.
+
+> "Pleo" and the Pleo
 > API are referenced only to describe what this server talks to. You need your
 > own Pleo API credentials, and use of the API is subject to Pleo's own terms.
 
@@ -218,8 +219,8 @@ the server sends it upstream as `Idempotency-Key`.
 - Optional JSONL audit logging stores hashed targets and hashed idempotency
   keys, not raw request bodies.
 - The Streamable HTTP transport binds to `127.0.0.1` by default.
-- Set `MCP_HTTP_TOKEN` to require bearer auth for HTTP transport access. The
-  token is compared in constant time.
+- The HTTP transport requires `MCP_HTTP_TOKEN` (bearer auth, compared in
+  constant time) for any non-loopback bind; see [HTTP Transport](#http-transport).
 - Set `MCP_ALLOWED_ORIGINS` for browser-based local clients. Without it,
   loopback origins are allowed and other origins are rejected.
 - `MCP_MAX_BODY_BYTES` defaults to `10485760` (10 MiB).
@@ -240,15 +241,52 @@ Environment:
 ```sh
 export MCP_HTTP_HOST=127.0.0.1
 export PORT=3000
-export MCP_HTTP_TOKEN="local-shared-token"
+export MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
 export MCP_ALLOWED_ORIGINS="http://localhost:5173"
 ```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MCP_HTTP_HOST` / `HOST` | `127.0.0.1` | Bind address. |
+| `PORT` | `3000` | Listen port (1-65535). |
+| `MCP_HTTP_TOKEN` | - | Bearer token required on `/mcp`; at least 32 printable ASCII characters (e.g. `openssl rand -hex 32`). Required for a non-loopback bind or `MCP_ALLOW_ANY_ORIGIN=true`. |
+| `MCP_HTTP_ALLOW_UNAUTHENTICATED` | `false` | Serve `/mcp` without a token on a non-loopback bind or with `MCP_ALLOW_ANY_ORIGIN` (logs a warning). Only when access is restricted by other means. |
+| `MCP_MAX_BODY_BYTES` | `10485760` | Largest accepted request body; larger bodies get 413. |
+| `MCP_ALLOWED_ORIGINS` | localhost origins | Comma-separated exact `Origin` values allowed. |
+| `MCP_ALLOW_ANY_ORIGIN` | `false` | Allow any `Origin`; requires `MCP_HTTP_TOKEN`. |
+| `MCP_ALLOWED_HOSTS` | see below | Comma-separated host names accepted in the `Host` header. |
+| `MCP_AUTH_FAILURE_LIMIT` | `20` | Failed authentications per client address and window before further failures get 429; `0` disables. |
+| `MCP_AUTH_FAILURE_WINDOW_MS` | `60000` | Window for the limit above. |
+| `PLEO_TIMEOUT_MS` | `30000` | Upstream request timeout (1-600000 ms). |
+
+The server refuses to start when it would expose `/mcp` without a token: a
+non-loopback bind or `MCP_ALLOW_ANY_ORIGIN=true` without `MCP_HTTP_TOKEN`
+(unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`). Invalid numbers or booleans in
+these variables also stop it at startup instead of being ignored. On a loopback
+bind, only `localhost`, `127.0.0.1`, `[::1]` or the bind address are accepted
+in the `Host` header (DNS-rebinding protection); set `MCP_ALLOWED_HOSTS` to
+change this. `GET /healthz` answers without authentication.
 
 Endpoint:
 
 ```text
 POST http://127.0.0.1:3000/mcp
 ```
+
+## Security model
+
+- This server uses one shared upstream identity: every caller acts with the
+  credentials configured in the environment. It does not authenticate or
+  distinguish end users itself.
+- Per-user authentication and authorization belong in an identity-aware gateway
+  in front of the HTTP transport, which holds `MCP_HTTP_TOKEN`.
+- Tool access is not data access control: anyone who can call the tools can
+  reach whatever the configured Pleo credentials can reach. Use credentials with
+  the narrowest scope that works.
+- Upstream requests never follow redirects, so credentials are only sent to the
+  configured API origin.
+- The HTTP server does not terminate TLS. Put it behind a TLS-terminating proxy
+  or keep it on a private network.
 
 ## API Sources
 
