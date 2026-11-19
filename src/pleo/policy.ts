@@ -1,5 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import type { PreparedPleoRequest } from './requests.js';
+import { currentInstancePolicy } from './scope.js';
+
+/*
+ * Outside a gateway call (the MCP server) the policy comes from the
+ * environment: PLEO_ENABLE_WRITES and PLEO_POLICY_PATH. Inside a gateway call
+ * under a host's InstancePolicy (src/pleo/scope.ts) neither is read: writes
+ * follow policy.enableWrites, tools in policy.disabledTools are refused, and
+ * refusals are worded for the host.
+ */
 
 export interface PleoPolicy {
   writesEnabled?: boolean;
@@ -33,6 +42,11 @@ const ALLOWED_READ_TOOLS = new Set([
 ]);
 
 export function checkToolPolicy(toolName: string): PleoPolicyDecision {
+  const hosted = currentInstancePolicy();
+  if (hosted?.disabledTools.has(toolName)) {
+    return { allowed: false, reason: `tool is disabled on this instance by the embedding host: ${toolName}` };
+  }
+
   if (ALLOWED_READ_TOOLS.has(toolName)) {
     return { allowed: true, reason: 'read-only or dry-run Pleo tool' };
   }
@@ -83,6 +97,10 @@ export async function checkRequestPolicy(
 }
 
 async function readPolicy(): Promise<PleoPolicy> {
+  if (currentInstancePolicy()) {
+    // Under a host's policy the host decides; no file is read from the environment.
+    return {};
+  }
   const policyPath = process.env.PLEO_POLICY_PATH;
   if (!policyPath) {
     return {};
@@ -92,7 +110,19 @@ async function readPolicy(): Promise<PleoPolicy> {
   return JSON.parse(text) as PleoPolicy;
 }
 
+/** Whether write tools may run on the instance whose call is in progress. */
+export function writesEnabled(): boolean {
+  const hosted = currentInstancePolicy();
+  return hosted ? hosted.enableWrites : process.env.PLEO_ENABLE_WRITES === 'true';
+}
+
 function checkWritesEnabled(): PleoPolicyDecision {
+  if (currentInstancePolicy()) {
+    return writesEnabled()
+      ? { allowed: true, reason: 'writes enabled by the embedding host' }
+      : { allowed: false, reason: 'writes are disabled. The embedding host has not enabled writes for this instance.' };
+  }
+
   if (process.env.PLEO_ENABLE_WRITES !== 'true') {
     return {
       allowed: false,

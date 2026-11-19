@@ -1,35 +1,81 @@
+/**
+ * Errors and redaction.
+ *
+ * The rule: no text Pleo controls ever reaches a host, a result or an audit
+ * record through an error. An HTTP error carries the status, our own hint and
+ * the parsed Retry-After; never a response body, an error message from Pleo,
+ * or a redirect's Location. Pleo's text can quote the request or part of the
+ * key, and no redactor recognises every fragment.
+ *
+ * Redaction is the second line: the key of the instance in scope (its exact
+ * value, its encoded forms and any fragment of FRAGMENT_LENGTH characters or
+ * more) is redacted from everything returned, on structured values before
+ * they are serialised.
+ */
+import { redactRegisteredSecrets } from './upstream-http.js';
+
+export { FRAGMENT_LENGTH, MIN_SECRET_LENGTH } from './upstream-http.js';
+
+/** Values nested deeper than this are replaced by redactDeep, never passed on. */
+export const MAX_REDACT_DEPTH = 64;
+
 export interface PleoHttpErrorInput {
   status: number;
   method: string;
   url: string;
-  payload?: unknown;
   retryAfter?: string;
   requestId?: string;
-  fallbackMessage?: string;
 }
 
 const SECRET_PATTERNS = [
   /Authorization:\s*(Bearer|Basic)\s+[^,\s}]+/gi,
-  /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|apiKey|accessToken|token)["']?\s*[:=]\s*["']?[^"',\s}]+/gi,
+  // A credential-named assignment in text: `X-Api-Key: S`, `client_secret=S`, `?api_key=S`, `"accessToken": "S"`.
+  /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|(?:x[-_]?)?api[-_]?(?:key|token|secret)|client[-_]?secret|(?:access|refresh|auth|id|session|bearer)[-_]?token|accessToken|apiKey|token|password|passwd|secret)["']?\s*[:=]\s*["']?[^"',\s}&]+/gi,
   /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/g,
+  // Any case ("bearer", "BASIC"), when what follows looks like a token: 8 or more base64 or base64url characters. A
+  // short word after "basic" ("basic plan") is left alone; a longer one is masked, a false positive we accept.
+  /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}=*/gi,
+  // A JSON Web Token anywhere: three base64url segments, the first a JSON header ("eyJ").
+  /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g,
 ];
 
+/** Our own guidance per HTTP status. */
+const STATUS_HINTS: Record<number, string> = {
+  401: 'The Pleo API key was rejected (invalid or revoked).',
+  403: 'The Pleo API key has no access to this. Retrying will not help.',
+  404: 'Pleo found nothing at this address. Check the ids.',
+  429: 'Pleo is throttling requests. Wait and retry later.',
+};
+
+/**
+ * An HTTP error from Pleo: the status, our own hint and the parsed
+ * Retry-After. Nothing of the body is kept. The request id header is kept as
+ * a property for diagnostics, never in the message.
+ */
 export class PleoHttpError extends Error {
   readonly status: number;
   readonly method: string;
   readonly url: string;
-  readonly payload?: unknown;
+  /** Seconds to wait, parsed from Retry-After; undefined when absent or not a number of seconds. */
   readonly retryAfter?: string;
   readonly requestId?: string;
 
   constructor(input: PleoHttpErrorInput) {
-    super(formatPleoHttpError(input));
+    const retryAfter = wholeNumber(input.retryAfter);
+    super(
+      [
+        `Pleo API request failed with HTTP ${input.status}`,
+        Object.hasOwn(STATUS_HINTS, input.status) ? STATUS_HINTS[input.status] : undefined,
+        retryAfter === undefined ? undefined : `retry-after=${retryAfter}s`,
+      ]
+        .filter(Boolean)
+        .join(' | '),
+    );
     this.name = 'PleoHttpError';
     this.status = input.status;
     this.method = input.method;
-    this.url = redactSecrets(input.url);
-    this.payload = input.payload;
-    this.retryAfter = input.retryAfter;
+    this.url = input.url;
+    this.retryAfter = retryAfter;
     this.requestId = input.requestId;
   }
 }
@@ -43,9 +89,24 @@ export function formatUnknownError(error: unknown): string {
 }
 
 export function redactSecrets(value: string): string {
+  return redactCredentialPatterns(redactRegisteredSecrets(value));
+}
+
+/**
+ * Credential-shaped text replaced by a marker: an Authorization header, a
+ * Bearer or Basic value, and `token=`/`apiKey:`-style assignments. Applied to
+ * every text a gateway returns, so a credential the upstream echoes (one that
+ * is not the instance's own key, such as a session token) never leaves it.
+ * Uses no state: the same input always gives the same output.
+ */
+export function redactCredentialPatterns(value: string): string {
   return SECRET_PATTERNS.reduce(
     (current, pattern) =>
       current.replace(pattern, match => {
+        if (/^eyJ/.test(match)) {
+          return '[REDACTED]';
+        }
+
         if (/^(Bearer|Basic)\s/i.test(match)) {
           const scheme = match.split(/\s+/)[0] ?? 'Authorization';
           return `${scheme} [REDACTED]`;
@@ -63,30 +124,128 @@ export function redactSecrets(value: string): string {
   );
 }
 
-function formatPleoHttpError(input: PleoHttpErrorInput): string {
-  const parts = [
-    `Pleo API request failed with HTTP ${input.status}`,
-    `${input.method.toUpperCase()} ${redactSecrets(input.url)}`,
-    input.requestId ? `request-id=${input.requestId}` : undefined,
-    input.retryAfter ? `retry-after=${input.retryAfter}s` : undefined,
-    pleoErrorText(input.payload),
-    input.fallbackMessage,
-  ].filter(Boolean);
-
-  return redactSecrets(parts.join(' | '));
+/**
+ * Copy of a JSON-like value with every string, object keys included, passed
+ * through redactSecrets. Redact a value with this before it is serialised:
+ * a serialised secret is escaped, and the escaped form is easy to miss.
+ * Anything nested deeper than MAX_REDACT_DEPTH is replaced, never passed on.
+ */
+export function redactDeep(value: unknown, depth = 0): unknown {
+  if (depth > MAX_REDACT_DEPTH) {
+    return '[nested too deep]';
+  }
+  if (typeof value === 'string') {
+    return redactSecrets(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    // The string form of a primitive is checked too; a match becomes the string "‹redacted›", so JSON stays valid.
+    const text = String(value);
+    if (redactSecrets(text) !== text) return '‹redacted›';
+    return typeof value === 'bigint' ? text : value;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  const json = (value as { toJSON?: unknown }).toJSON;
+  if (typeof json === 'function') {
+    return redactDeep(json.call(value), depth + 1);
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => redactDeep(entry, depth + 1));
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [redactSecrets(key), redactDeep(entry, depth + 1)]),
+  );
 }
 
-function pleoErrorText(payload: unknown): string | undefined {
-  if (!payload || typeof payload !== 'object') {
-    return undefined;
+/** Copy of parsed JSON with anything nested deeper than MAX_REDACT_DEPTH replaced, so it can be serialised safely. */
+export function limitDepth(value: unknown, depth = 0): unknown {
+  if (depth > MAX_REDACT_DEPTH) {
+    return '[nested too deep]';
   }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => limitDepth(entry, depth + 1));
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, limitDepth(entry, depth + 1)]));
+}
 
-  const value = payload as Record<string, unknown>;
-  const message =
-    value.message ??
-    value.error ??
-    value.errorMessage ??
-    (Array.isArray(value.errors) ? value.errors.map(String).join(', ') : undefined);
+/** Keys whose value is a failure context: anything inside that carries an error or a message is a failure. */
+const FAILURE_CONTEXTS = new Set(['failures', 'failure', 'errors', 'error', 'metadata', 'warnings', 'amount']);
+/** Fields that make an object in a failure context a failure. */
+const FAILURE_FIELDS = ['error', 'errors', 'failures', 'warnings', 'message', 'detail', 'description'];
+/** Failure lists: every element in one is a failure, whatever its fields. */
+const FAILURE_LISTS = new Set(['failures', 'failure', 'errors', 'error', 'warnings']);
 
-  return typeof message === 'string' ? message : undefined;
+/** One element of a failure list, reduced to a numeric status (when it has one) and our own text. */
+function failureEntry(value: unknown): { status?: number; message: string } {
+  const status =
+    typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>).status : undefined;
+  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+    ? { status, message: `Pleo reported a failure with HTTP ${status}.` }
+    : { message: 'Pleo reported a failure.' };
+}
+
+/** A failure list: every element (an object with any fields, a text, a list) becomes a failureEntry. */
+function failureList(value: unknown): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  return Array.isArray(value) ? value.map(failureEntry) : failureEntry(value);
+}
+
+/**
+ * Copy of a successful body with every failure reported inside it reduced to
+ * its HTTP status and our own text.
+ *
+ * - Every element of a failure list (`failures`, `failure`, `errors`,
+ *   `error`, `warnings`), at any depth, becomes `{ status?, message }`: a
+ *   numeric status is kept, and every other field, whatever its name, is
+ *   dropped. Nothing below a failure list is kept.
+ * - Elsewhere a failure is an object with a numeric `status` of 400 or
+ *   more, an object with an `error` field, or an object in a failure
+ *   context (`metadata`, `amount` and the like, also through wrappers such
+ *   as `data` below them) with any of `error`, `errors`, `failures`,
+ *   `warnings`, `message`, `detail` or `description`. It becomes
+ *   `{ status?, error }` with our own text.
+ *
+ * A text outside a failure list, an amount among them, is kept.
+ * Depth-limited.
+ */
+export function nestedFailuresAsStatus(value: unknown, depth = 0, context = false): unknown {
+  if (depth > MAX_REDACT_DEPTH) {
+    return '[nested too deep]';
+  }
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => nestedFailuresAsStatus(entry, depth + 1, context));
+  }
+  const record = value as Record<string, unknown>;
+  const status = record.status;
+  const failedStatus = typeof status === 'number' && Number.isInteger(status) && status >= 400 && status <= 599;
+  const present = (field: string) => Object.hasOwn(record, field) && record[field] !== null && record[field] !== undefined;
+  if (failedStatus || present('error') || (context && FAILURE_FIELDS.some(present))) {
+    return failedStatus
+      ? { status, error: `Pleo reported a failure with HTTP ${status}.` }
+      : { error: 'Pleo reported a failure.' };
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [
+      key,
+      FAILURE_LISTS.has(key)
+        ? failureList(entry)
+        : // A failure context holds through wrappers such as `data` below it.
+          nestedFailuresAsStatus(entry, depth + 1, context || FAILURE_CONTEXTS.has(key)),
+    ]),
+  );
+}
+
+/** A header value that is a whole number of at most 9 digits, as text; anything else is dropped. */
+function wholeNumber(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && /^\d{1,9}$/.test(trimmed) ? String(Number(trimmed)) : undefined;
 }

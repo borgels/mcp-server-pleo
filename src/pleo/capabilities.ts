@@ -223,9 +223,10 @@ export const PLEO_CAPABILITIES: PleoCapability[] = [
   },
 ];
 
-export function searchCapabilities(query: string, limit: number): PleoCapability[] {
+/** Capabilities matching the query, best first; only those in `offered` when it is given (a gateway instance). */
+export function searchCapabilities(query: string, limit: number, offered?: ReadonlySet<string>): PleoCapability[] {
   const normalized = query.trim().toLowerCase();
-  const scored = PLEO_CAPABILITIES.map(capability => ({
+  const scored = PLEO_CAPABILITIES.filter(capability => !offered || offered.has(capability.id)).map(capability => ({
     capability,
     score: capabilityScore(capability, normalized),
   }))

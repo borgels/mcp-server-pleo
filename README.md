@@ -211,11 +211,13 @@ the server sends it upstream as `Idempotency-Key`.
 
 ## Security And Audit
 
-- Credentials are read from environment variables only.
+- The MCP server reads credentials from environment variables only; an
+  embedded gateway takes them only from its options (see [Embedding](#embedding-gateway)).
 - `PLEO_BASE_URL` must be `https://`; loopback `http://` is allowed for local
   mocks.
-- Formatted errors redact `Authorization`, `PLEO_API_KEY`, `PLEO_ACCESS_TOKEN`,
-  and bearer/basic token material.
+- Errors are our own texts with the HTTP status; Pleo's response bodies are
+  never read into an error. Formatted errors also redact `Authorization`,
+  `PLEO_API_KEY`, `PLEO_ACCESS_TOKEN`, and bearer/basic token material.
 - Optional JSONL audit logging stores hashed targets and hashed idempotency
   keys, not raw request bodies.
 - The Streamable HTTP transport binds to `127.0.0.1` by default.
@@ -272,6 +274,110 @@ Endpoint:
 ```text
 POST http://127.0.0.1:3000/mcp
 ```
+
+## Embedding (`./gateway`)
+
+`mcp-server-pleo/gateway` lets a host application run the tools in-process
+instead of over MCP, in the same shape as `mcp-server-template`. One process
+can run several gateway instances, for example one per tenant.
+
+```ts
+import { createPleoGateway, pleoToolCatalog } from 'mcp-server-pleo/gateway';
+
+const gateway = createPleoGateway({ apiKey: tenant.pleoApiKey, policy: { audit: record => log(record) } });
+const result = await gateway.callTool('search_employees', { companyId }, { caller: 'user-1', requestId: 'r-1' });
+```
+
+The module exports:
+
+- `createPleoGateway({ apiKey, baseUrl?, fetchImpl?, timeoutMs?, policy? })`.
+  `apiKey` is the customer's standalone Pleo API key, sent as Basic auth. It
+  is required and never read from `PLEO_API_KEY`; the gateway has no OAuth
+  access-token option and never reads `PLEO_ACCESS_TOKEN` (the stdio and HTTP
+  transports still accept it). `baseUrl` defaults to
+  `https://external.pleo.io` and is never read from `PLEO_BASE_URL`.
+- `gateway.tools` (the tools enabled on the instance) and
+  `gateway.callTool(name, input, { caller, requestId })`. Names are accepted
+  with or without the `pleo_` prefix. Input is validated with the tool's zod
+  schema before anything is sent, and unknown fields are refused. The audit
+  records of the call hold `caller` only as an HMAC pseudonym (a per-process
+  key) and a request id of the server's own, the same for every record of the
+  call; the host's `requestId` is not written. An error is recorded as a fixed
+  code (`http_<status>`, `timeout` or `error`), never as its message.
+- `pleoGatewayTools`: the definitions (`name` without prefix, `title`,
+  `description`, `riskLevel`, `enabledByDefault`, `inputSchema` as JSON
+  Schema derived from the zod schema the call is validated with).
+- `pleoToolCatalog`: the same tools, deeply frozen, with `upstream` (method
+  and path of every Pleo request the tool may make) and `broad` (true when
+  the input chooses what kind of thing is read). Hosts can build their own
+  permission model from it without creating an instance.
+- `GatewayConfigError` and the types (`PleoGatewayOptions`, `PleoGateway`,
+  `InstancePolicy`, `AuditSink`, `GatewayToolDefinition`,
+  `GatewayToolCatalogEntry`, `GatewayUpstreamOperation`, `GatewayToolResult`,
+  `GatewayCallContext` and the JSON types).
+
+| Tool | Risk | Broad | Pleo requests |
+|---|---|---|---|
+| `search_capabilities` | read | no | none |
+| `check_connection` | read | no | `GET /v1/introspect` |
+| `introspect_auth` | read | no | `GET /v1/introspect` |
+| `search_companies` | read | no | `GET /v1/companies` |
+| `search_employees` | read | no | `GET /v2/employees` |
+| `search_vendors` | read | no | `POST /v1/vendors:search` |
+| `list_export_jobs` | read | no | `GET /v3/export-jobs` |
+| `list_export_items` | read | no | `GET /v3/export-items` |
+
+The guarded REST read (`pleo_rest_read`) and the prepare/commit write tools
+stay in the MCP server only: a free-form read cannot be described by one
+upstream path, and the gateway has no write tools.
+
+**Instance policy.** With `policy: { enableWrites, disabledTools, audit }`
+the host decides the instance's policy: the instance then reads none of
+`PLEO_ENABLE_WRITES`, `PLEO_POLICY_PATH` or `PLEO_AUDIT_LOG`, leaves the
+disabled tools out of `tools` (and out of `search_capabilities`), refuses
+them when called, and sends its audit records to `audit` (none without it).
+`disabledTools` must name gateway tools. A sink that throws on a start
+record refuses the call. Without `policy` the instance uses the environment,
+like the MCP server. Every call runs in a call scope of its own
+(AsyncLocalStorage), so a call made from inside another instance's call
+never inherits its policy, sink, redactor or caller. There is no
+process-wide registry of keys. With `policy`, the only variable an instance
+still reads is `PLEO_TIMEOUT_MS`, and only when `timeoutMs` is not given.
+Without `policy` it also reads `PLEO_ENABLE_WRITES`, `PLEO_POLICY_PATH` and
+`PLEO_AUDIT_LOG`, as described above.
+
+**Results.** A successful result has `structuredContent` and one text block:
+a short summary, a blank line, and the same data as compact JSON. The data
+is redacted twice against the instance's secrets (the key and the Basic
+credential built from it: exact values, URL- and JSON-encoded forms and any
+piece of 6 characters or more, in strings, object keys and the string form
+of numbers and booleans) before it is serialised. A failure reported inside
+a successful answer is reduced to its HTTP status and our own text.
+
+**Errors.** An error result carries our own English text, never Pleo's
+response body, message or request id, nor a redirect's `Location` or the
+configured address. An HTTP failure starts with
+`Pleo API request failed with HTTP <status>`, followed by our own hint and
+the parsed `retry-after` where there is one, so a host can map it by status.
+Other errors start with `Invalid input for <tool>:`,
+`Unsupported Pleo gateway tool:`, `Pleo API responded with a redirect (HTTP <status>)`,
+`Network error calling the Pleo API`, `Pleo API request timed out after`, or
+the policy refusal.
+
+**Key admission and the sink check.** A gateway accepts only a key of
+printable ASCII (0x21-0x7E) of at least 16 characters that shares no piece
+of 6 characters with a string literal in `src/`
+(`src/fixed-corpus.generated.ts`, kept up to date by a test), with the fixed
+fallbacks (`src/fallbacks.ts`) or with the tool list. A refused key throws
+`GatewayConfigError` when the gateway is created, before anything is built
+or sent; the refusal is a fixed text that holds no piece of the key, and
+every error a gateway throws has no `cause` and a `stack` of only
+`name: message`. As the very last step, every output (the tool list, each
+result as a whole, each audit record or line) is checked in its final
+form, and one that still holds a piece of the key is replaced by a fixed
+fallback. Residual risk: Pleo echoing the key back otherwise transformed
+(split into pieces shorter than 6 characters, reversed, hashed) is not
+recognised; such data reaches only the tenant whose key it is.
 
 ## Security model
 
