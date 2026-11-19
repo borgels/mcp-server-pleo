@@ -398,3 +398,31 @@ describe('the audit records a tool failure by its code', () => {
     expect(JSON.stringify(record)).not.toMatch(/ECONNREFUSED|10\.0\.0\.1/);
   });
 });
+
+describe('a scheme word before a value that holds the marker', () => {
+  const values = ['Basic ‹redacted›cGFzcw==', 'basic ‹redacted›abcdef', 'BEARER ‹redacted›abcdef', 'Bearer ‹redacted›x'];
+  const masked = ['Basic [REDACTED]', 'basic [REDACTED]', 'BEARER [REDACTED]', 'Bearer [REDACTED]'];
+
+  it('masks the whole value, whatever the length of the tail after the marker', async () => {
+    const { redactCredentialPatterns, redactSecrets } = await import('../src/errors.js');
+    values.forEach((text, i) => {
+      expect(redactCredentialPatterns(text), text).toBe(masked[i]);
+      expect(redactSecrets(text), text).toBe(masked[i]);
+    });
+    expect(redactSecrets('"Bearer ‹redacted›x", next')).toBe('"Bearer [REDACTED]", next');
+    expect(redactSecrets('a basic plan')).toBe('a basic plan');
+  });
+
+  it('masks it through the gateway, in structuredContent and in the text block', async () => {
+    const gw = createPleoGateway({
+      apiKey: 'tenant-a-key-0123456789abcdef',
+      baseUrl: BASE,
+      timeoutMs: 5_000,
+      fetchImpl: async () => json({ data: [{ id: 'c1', name: values.join(' | ') }], pagination: {} }),
+      policy: { enableWrites: false },
+    });
+    const result = await gw.callTool('search_companies', {});
+    expect(JSON.stringify(result.structuredContent)).toContain(masked.join(' | '));
+    expect(JSON.stringify(result)).not.toMatch(/cGFzcw|abcdef|‹redacted›x/);
+  });
+});
