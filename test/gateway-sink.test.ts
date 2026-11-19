@@ -212,3 +212,50 @@ describe('credentials the upstream echoes, which are not the instance key', () =
     expect(result.content[0]!.text).not.toContain(SESSION);
   });
 });
+
+describe('credential variants the upstream echoes (review round 2)', () => {
+  const KEY = 'tenant-a-key-0123456789abcdef';
+  const S = 'opaque-session-secret-778899';
+  const JWT = `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.${'q1w2e3r4'.repeat(3)}`;
+  const record = {
+    id: 'c1',
+    name: 'Testfirma ApS',
+    lower: `bearer ${S}`,
+    lowerBasic: `basic ${S}`,
+    plan: 'basic plan',
+    mixed: `BEARER ${S}`,
+    list: [`bearer ${S}`, 'plain text'],
+    [`bearer ${S}`]: 'key holds it',
+    accessToken: [S],
+    refreshToken: { value: S },
+    'x-api-key': S,
+    'X-Auth-Token': S,
+    'api-key': S,
+    'Api_Key': S,
+    jwtText: `see ${JWT} here`,
+    jwtList: [JWT],
+  };
+  const echoing: typeof fetch = async url =>
+    new URL(String(url)).pathname === '/v1/companies'
+      ? json({ data: [record], pagination: { hasNextPage: false } })
+      : json({ message: 'not found' }, 404);
+
+  it('are all masked, in structuredContent and in the text block, whole for credential-named fields', async () => {
+    const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl: echoing, policy: { enableWrites: false } });
+    const result = await gw.callTool('search_companies', {});
+    expect(result.isError).toBeFalsy();
+    const all = JSON.stringify(result);
+    for (const secret of [S, JWT, JWT.split('.')[2]!]) expect(all).not.toContain(secret);
+    expect(result.content[0]!.text).not.toContain(S);
+    expect(all).toContain('Testfirma ApS');
+    expect(all).toContain('plain text');
+    const out = (result.structuredContent as { data: Array<Record<string, unknown>> }).data[0]!;
+    for (const field of ['accessToken', 'refreshToken', 'x-api-key', 'X-Auth-Token', 'api-key', 'Api_Key']) {
+      expect(out[field], field).toBe('‹redacted›');
+    }
+    expect(out.name).toBe('Testfirma ApS');
+    // An ordinary word after "basic" is not a credential.
+    expect(out.plan).toBe('basic plan');
+    expect(out.id).toBe('c1');
+  });
+});

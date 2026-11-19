@@ -436,8 +436,17 @@ function buildPleoGateway(options: PleoGatewayOptions, apiKey: string, redactor:
  * Field names whose value is a credential whatever it looks like: the value of
  * such a field is replaced whole, not only when it matches a pattern.
  */
-const CREDENTIAL_FIELD =
-  /^(authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|(access|refresh|id|session|bearer|auth|api)[-_]?(token|key)|token|api[-_]?secret|client[-_]?secret|secret|password|passwd)$/i;
+const CREDENTIAL_NAME =
+  /^x?(authorization|proxyauthorization|cookie|setcookie|(access|refresh|id|session|bearer|auth|api|private|secret|subscription)(token|key)|token|apisecret|clientsecret|secret|password|passwd|credentials?)$/;
+
+/**
+ * Whether a field name names a credential, however it is written: case, `-`,
+ * `_`, spaces and a leading `x-` do not matter (`accessToken`, `access_token`,
+ * `X-Api-Key`, `x-auth-token`, `api-key`).
+ */
+function isCredentialField(name: string): boolean {
+  return CREDENTIAL_NAME.test(name.toLowerCase().replace(/[-_\s.]/g, ''));
+}
 
 /** One text as a gateway may return it: credential-shaped text masked, then the instance's own secrets. */
 function redactText(value: string, redactor: SecretRedactor): string {
@@ -447,7 +456,7 @@ function redactText(value: string, redactor: SecretRedactor): string {
 /**
  * A copy of a JSON value with every string, object keys included, passed
  * through the credential patterns and the redactor, the value of every
- * credential-named field (CREDENTIAL_FIELD) replaced whole, and every number
+ * credential-named field (isCredentialField) replaced whole, whatever its type, and every number
  * or boolean whose string form would be redacted replaced by the string
  * "‹redacted›". Anything nested deeper than MAX_REDACT_DEPTH is replaced,
  * never passed on.
@@ -478,9 +487,8 @@ function redactDeep(value: unknown, redactor: SecretRedactor, depth = 0): unknow
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       redactText(key, redactor),
-      CREDENTIAL_FIELD.test(key) && entry !== null && typeof entry !== 'object'
-        ? REDACTION_MARKER
-        : redactDeep(entry, redactor, depth + 1),
+      // The whole value of a credential-named field, whatever its type: a list or an object under it is a credential too.
+      isCredentialField(key) && entry !== null && entry !== undefined ? REDACTION_MARKER : redactDeep(entry, redactor, depth + 1),
     ]),
   );
 }

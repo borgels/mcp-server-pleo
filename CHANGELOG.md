@@ -16,6 +16,9 @@ for hosts that run one instance per tenant in a shared process.
   the instance's key: Authorization headers, Bearer and Basic values,
   `token=`-style text, and the whole value of credential-named fields
   (`accessToken`, `refresh_token`, `client_secret`, `password` and the like).
+  Bearer and Basic in any case when followed by a credential-like value, JSON
+  Web Tokens anywhere, and credential-named fields whatever their value's type
+  and however the name is written (`X-Api-Key`, `x-auth-token`, `api-key`).
 - Key admission: printable ASCII, at least 16 characters, no piece of 6
   characters shared with the server's own texts, its fixed fallbacks or the
   tool list. A refused key throws `GatewayConfigError` at construction with a

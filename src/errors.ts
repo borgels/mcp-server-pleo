@@ -31,6 +31,11 @@ const SECRET_PATTERNS = [
   /Authorization:\s*(Bearer|Basic)\s+[^,\s}]+/gi,
   /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|apiKey|accessToken|token)["']?\s*[:=]\s*["']?[^"',\s}]+/gi,
   /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/g,
+  // Any case ("bearer", "BASIC"), when what follows looks like a credential: 8 or more characters with a digit, so an
+  // ordinary word after "basic" is left alone.
+  /\b(bearer|basic)\s+(?=[A-Za-z0-9._~+/-]*[0-9])[A-Za-z0-9._~+/-]{8,}=*/gi,
+  // A JSON Web Token anywhere: three base64url segments, the first a JSON header ("eyJ").
+  /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g,
 ];
 
 /** Our own guidance per HTTP status. */
@@ -97,6 +102,10 @@ export function redactCredentialPatterns(value: string): string {
   return SECRET_PATTERNS.reduce(
     (current, pattern) =>
       current.replace(pattern, match => {
+        if (/^eyJ/.test(match)) {
+          return '[REDACTED]';
+        }
+
         if (/^(Bearer|Basic)\s/i.test(match)) {
           const scheme = match.split(/\s+/)[0] ?? 'Authorization';
           return `${scheme} [REDACTED]`;

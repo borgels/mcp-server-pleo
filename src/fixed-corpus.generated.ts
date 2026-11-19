@@ -306,6 +306,7 @@ export const FIXED_CORPUS: readonly string[] = [
   "WWW-Authenticate",
   "Withheld: the answer held text that matches the key of this instance.",
   "Writes are disabled unless PLEO_ENABLE_WRITES=true and policy allows the operation.",
+  "[REDACTED]",
   "[http] ",
   "[http] 500 ",
   "[invalid URL]",
