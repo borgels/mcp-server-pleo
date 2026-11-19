@@ -169,20 +169,34 @@ describe('credential masking with = and : inside the value', () => {
     expect(padded1.endsWith('=') && !padded1.endsWith('==')).toBe(true);
     expect(padded2.endsWith('==')).toBe(true);
     const cases: Array<[string, string]> = [
-      [`Basic ${padded1}`, padded1.slice(0, 6)],
-      [`basic ${padded2}`, padded2.slice(0, 6)],
-      ['bearer abcdefgh12345678=', 'abcdefgh'],
-      ['Bearer abcdefgh12345678==', 'abcdefgh'],
-      [`Authorization: Basic ${padded2}`, padded2.slice(0, 6)],
-      ['secret=qzx:defghij', 'qzx'],
-      ['password=qzw=ss:word', 'qzw'],
-      ['token: ab=cdefgh', 'cdefgh'],
-      ['x-api-key=qzv==', 'qzv'],
+      [`Basic ${padded1}`, 'Basic [REDACTED]'],
+      [`basic ${padded2}`, 'basic [REDACTED]'],
+      ['bearer abcdefgh12345678=', 'bearer [REDACTED]'],
+      ['Bearer abcdefgh12345678==', 'Bearer [REDACTED]'],
+      [`Authorization: Basic ${padded2}`, 'Authorization: [REDACTED]'],
+      ['secret=qzx:defghij', 'secret= [REDACTED]'],
+      ['password=qzw=ss:word', 'password= [REDACTED]'],
+      ['token: ab=cdefgh', 'token: [REDACTED]'],
+      ['x-api-key=qzv==', 'x-api-key= [REDACTED]'],
     ];
-    for (const [text, piece] of cases) {
-      const out = redactCredentialPatterns(text);
-      expect(out, text).toContain('[REDACTED]');
-      expect(out, text).not.toContain(piece);
-    }
+    for (const [text, expected] of cases) expect(redactCredentialPatterns(text), text).toBe(expected);
+  });
+});
+
+describe('credential values that hold a registered secret', () => {
+  it('masks the whole Basic, Bearer or JWT value even when a known key sits inside it', async () => {
+    const { redactSecrets } = await import('../src/errors.js');
+    const { registerSecret } = await import('../src/upstream-http.js');
+    registerSecret('qzxwabcd12345678');
+    const basic = Buffer.from('qzxwabcd12345678:othersecret').toString('base64');
+    expect(redactSecrets(`Basic ${basic}`)).toBe('Basic [REDACTED]');
+    expect(redactSecrets('Bearer qzxwabcd12345678tailtoken')).toBe('Bearer [REDACTED]');
+    expect(redactSecrets('Bearer headtokenqzxwabcd12345678==')).toBe('Bearer [REDACTED]');
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', Buffer.from('{"sub":"qzxwabcd12345678"}').toString('base64url'), 'qzxwabcd12345678sig'].join('.');
+    expect(redactSecrets(`token ${jwt} end`)).toBe('token [REDACTED] end');
+    // A value a previous redaction already marked is still masked whole.
+    expect(redactSecrets('Basic ‹redacted›pvdGhlcnNlY3JldA==')).toBe('Basic [REDACTED]');
+    // The known key on its own is still replaced.
+    expect(redactSecrets('plain qzxwabcd12345678 text')).toBe('plain ‹redacted› text');
   });
 });

@@ -31,12 +31,13 @@ const SECRET_PATTERNS = [
   /Authorization:\s*(Bearer|Basic)\s+[^,\s}]+/gi,
   // A credential-named assignment in text: `X-Api-Key: S`, `client_secret=S`, `?api_key=S`, `"accessToken": "S"`.
   /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|(?:x[-_]?)?api[-_]?(?:key|token|secret)|client[-_]?secret|(?:access|refresh|auth|id|session|bearer)[-_]?token|accessToken|apiKey|token|password|passwd|secret)["']?\s*[:=]\s*["']?[^"',\s}&]+/gi,
-  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/g,
+  // A marker left by the secrets' redaction (‹redacted›) counts as part of a value, so the rest of it is masked too.
+  /\b(Bearer|Basic)\s+(?:[A-Za-z0-9._~+/-]|‹redacted›)+=*/g,
   // Any case ("bearer", "BASIC"), when what follows looks like a token: 8 or more base64 or base64url characters. A
   // short word after "basic" ("basic plan") is left alone; a longer one is masked, a false positive we accept.
-  /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}=*/gi,
+  /\b(bearer|basic)\s+(?:[A-Za-z0-9._~+/-]|‹redacted›){8,}=*/gi,
   // A JSON Web Token anywhere: three base64url segments, the first a JSON header ("eyJ").
-  /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g,
+  /\beyJ(?:[A-Za-z0-9_-]|‹redacted›)*\.(?:[A-Za-z0-9_-]|‹redacted›)+\.(?:[A-Za-z0-9_-]|‹redacted›)*/g,
 ];
 
 /** Our own guidance per HTTP status. */
@@ -88,8 +89,19 @@ export function formatUnknownError(error: unknown): string {
   return redactSecrets(String(error));
 }
 
+/**
+ * Credential-shaped text first, while it is whole: an instance secret replaced inside a Basic value or a token would
+ * break the match and leave the rest of the value. Then the instance's secrets, then the patterns again (they also take
+ * the marker as part of a value), until nothing changes.
+ */
 export function redactSecrets(value: string): string {
-  return redactCredentialPatterns(redactRegisteredSecrets(value));
+  let result = redactCredentialPatterns(value);
+  for (let round = 0; round < 4; round += 1) {
+    const next = redactCredentialPatterns(redactRegisteredSecrets(result));
+    if (next === result) break;
+    result = next;
+  }
+  return result;
 }
 
 /**
