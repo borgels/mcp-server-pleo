@@ -259,3 +259,63 @@ describe('credential variants the upstream echoes (review round 2)', () => {
     expect(out.id).toBe('c1');
   });
 });
+
+describe('round 3: text variants, unexpected answers and the audit', () => {
+  const KEY = 'tenant-a-key-0123456789abcdef';
+  const S = 'opaquealphabeticsecret';
+
+  it('masks bearer and basic in any case, and credential assignments in text, but leaves a short word', async () => {
+    const texts = {
+      a: `bearer ${S}`,
+      b: 'basic dXNlcjpwYXNz',
+      c: `X-Api-Key: ${S}`,
+      d: `client_secret=${S}`,
+      e: `https://x.example.test/cb?api_key=${S}&page=2`,
+      plan: 'basic plan',
+    };
+    const fetchImpl: typeof fetch = async () => json({ data: [{ id: 'c1', name: 'Testfirma ApS', ...texts }], pagination: {} });
+    const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl, policy: { enableWrites: false } });
+    const result = await gw.callTool('search_companies', {});
+    const all = JSON.stringify(result);
+    for (const secret of [S, 'dXNlcjpwYXNz']) expect(all).not.toContain(secret);
+    expect(all).toContain('basic plan');
+    expect(all).toContain('Testfirma ApS');
+  });
+
+  it('refuses an answer that is not JSON, or JSON that does not parse, instead of passing it on', async () => {
+    const answers: Array<[string, string]> = [
+      ['text/plain', JSON.stringify({ 'x-api-key': S })],
+      ['text/html', '<p>hello</p>'],
+      ['application/json', `{"x-api-key":"${S}",`],
+    ];
+    for (const [type, body] of answers) {
+      const fetchImpl: typeof fetch = async () => new Response(body, { status: 200, headers: { 'content-type': type } });
+      const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl, policy: { enableWrites: false } });
+      const result = await gw.callTool('search_companies', {});
+      expect(result.isError, type).toBe(true);
+      expect(JSON.stringify(result), type).not.toContain(S);
+    }
+    const ok: typeof fetch = async () =>
+      new Response(JSON.stringify({ data: [], pagination: {} }), { status: 200, headers: { 'content-type': 'application/vnd.pleo+json; charset=utf-8' } });
+    const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl: ok, policy: { enableWrites: false } });
+    expect((await gw.callTool('search_companies', {})).isError).toBeFalsy();
+  });
+
+  it('writes no caller, request id or unknown tool name of the host to the audit', async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const gw = createPleoGateway({
+      apiKey: KEY,
+      baseUrl: BASE,
+      timeoutMs: 5_000,
+      fetchImpl: async () => json({ data: [], pagination: {} }),
+      policy: { enableWrites: false, audit: record => void records.push(record as Record<string, unknown>) },
+    });
+    const context = { caller: 'person@example.test', requestId: 'person@example.test' };
+    await gw.callTool('search_companies', {}, context);
+    const unknown = await gw.callTool('person@example.test', {}, context);
+    expect(JSON.stringify(unknown)).not.toContain('person@example.test');
+    expect(records.length).toBeGreaterThan(2);
+    expect(JSON.stringify(records)).not.toContain('person@example.test');
+    expect(records.some(record => record.tool === 'unknown_tool')).toBe(true);
+  });
+});

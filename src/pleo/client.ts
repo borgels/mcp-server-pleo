@@ -206,7 +206,16 @@ function transportError(error: unknown, method: string, timeoutMs: number): Erro
   return new Error(`Network error calling the Pleo API (${method})${shown}.`);
 }
 
-/** Reads a successful response body: JSON (depth-limited) when Pleo says so, else the text. */
+/** Whether a content type is JSON: application/json or a +json type, with or without parameters. */
+function isJsonContentType(contentType: string): boolean {
+  const type = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  return type === 'application/json' || (type.startsWith('application/') && type.endsWith('+json'));
+}
+
+/**
+ * Reads a successful response body: JSON (depth-limited). Anything else (another content type, or JSON that does not
+ * parse) is refused with a fixed text: it would reach the caller without the field masking that applies to data.
+ */
 async function readResponseBody(response: Response, method: string): Promise<unknown> {
   let text: string;
   try {
@@ -223,16 +232,15 @@ async function readResponseBody(response: Response, method: string): Promise<unk
     return null;
   }
 
-  const contentType = response.headers.get('content-type') ?? '';
-  if (!contentType.includes('application/json')) {
-    return text;
+  if (!isJsonContentType(response.headers.get('content-type') ?? '')) {
+    throw new Error(`Pleo API answered with a content type this server does not read (${method}).`);
   }
 
   try {
     // Depth-limited at once, so nothing downstream (a handler's JSON text, the gateway) can exhaust the stack.
     return limitDepth(JSON.parse(text) as unknown);
   } catch {
-    return text;
+    throw new Error(`Pleo API answered with JSON that could not be read (${method}).`);
   }
 }
 

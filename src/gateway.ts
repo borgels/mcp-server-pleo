@@ -389,7 +389,8 @@ function buildPleoGateway(options: PleoGatewayOptions, apiKey: string, redactor:
           ...(policy ? { policy } : {}),
           redactor,
           caller: contextValue(context?.caller, redactor),
-          requestId: contextValue(context?.requestId, redactor) ?? randomUUID(),
+          // Our own id for the call: the host's request id is its text, and is not written to the audit.
+          requestId: randomUUID(),
           offeredTools,
         },
         // A successful result is already redacted as data by normalizeResult, and its JSON text is built from that
@@ -411,10 +412,9 @@ function buildPleoGateway(options: PleoGatewayOptions, apiKey: string, redactor:
       const name = typeof toolName === 'string' ? canonicalToolName(toolName) : '';
       const tool = GATEWAY_TOOL_NAMES.includes(name) ? handlers.get(name) : undefined;
       if (!tool) {
-        // Redacted before it is cut short: a cut key would no longer match the redactor.
-        const shown = redactor.redact(String(toolName)).slice(0, 100);
-        await writeAuditEvent({ tool: shown, action: 'rejected', reason: 'unsupported tool' });
-        return errorResult(formatUnknownError(`Unsupported Pleo gateway tool: ${shown}`));
+        // Neither the audit record nor the answer repeats the name: it is the caller's text, not ours.
+        await writeAuditEvent({ tool: UNKNOWN_TOOL, action: 'rejected', reason: 'unsupported tool' });
+        return errorResult('Unsupported Pleo gateway tool.');
       }
 
       const parsed = tool.inputSchema.safeParse(input ?? {});
@@ -492,6 +492,9 @@ function redactDeep(value: unknown, redactor: SecretRedactor, depth = 0): unknow
     ]),
   );
 }
+
+/** The audit's tool for a call to a tool this gateway does not have. */
+const UNKNOWN_TOOL = 'unknown_tool';
 
 /** One gateway instance, as returned by createPleoGateway. */
 export type PleoGateway = ReturnType<typeof createPleoGateway>;

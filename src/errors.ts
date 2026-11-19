@@ -29,11 +29,12 @@ export interface PleoHttpErrorInput {
 
 const SECRET_PATTERNS = [
   /Authorization:\s*(Bearer|Basic)\s+[^,\s}]+/gi,
-  /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|apiKey|accessToken|token)["']?\s*[:=]\s*["']?[^"',\s}]+/gi,
+  // A credential-named assignment in text: `X-Api-Key: S`, `client_secret=S`, `?api_key=S`, `"accessToken": "S"`.
+  /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|(?:x[-_]?)?api[-_]?(?:key|token|secret)|client[-_]?secret|(?:access|refresh|auth|id|session|bearer)[-_]?token|accessToken|apiKey|token|password|passwd|secret)["']?\s*[:=]\s*["']?[^"',\s}&]+/gi,
   /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*/g,
-  // Any case ("bearer", "BASIC"), when what follows looks like a credential: 8 or more characters with a digit, so an
-  // ordinary word after "basic" is left alone.
-  /\b(bearer|basic)\s+(?=[A-Za-z0-9._~+/-]*[0-9])[A-Za-z0-9._~+/-]{8,}=*/gi,
+  // Any case ("bearer", "BASIC"), when what follows looks like a token: 8 or more base64 or base64url characters. A
+  // short word after "basic" ("basic plan") is left alone; a longer one is masked, a false positive we accept.
+  /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}=*/gi,
   // A JSON Web Token anywhere: three base64url segments, the first a JSON header ("eyJ").
   /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g,
 ];

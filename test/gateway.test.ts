@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { redactSecrets } from '../src/errors.js';
+import { callerPseudonym } from '../src/pleo/audit.js';
 import {
   createPleoGateway,
   GatewayConfigError,
@@ -257,7 +258,7 @@ describe('Pleo gateway input', () => {
 
     await expect(gateway.callTool('unknown_tool')).resolves.toMatchObject({
       isError: true,
-      content: [{ type: 'text', text: 'Unsupported Pleo gateway tool: unknown_tool' }],
+      content: [{ type: 'text', text: 'Unsupported Pleo gateway tool.' }],
     });
     for (const name of ['rest_read', 'prepare_request', 'commit_prepared_request', 'get_company']) {
       const result = await gateway.callTool(name, { path: '/v1/companies' });
@@ -280,10 +281,14 @@ describe('Pleo gateway policy', () => {
 
     expect(result.isError).toBeUndefined();
     expect(existsSync(auditFile)).toBe(false);
-    expect(records.map(record => [record.tool, record.action, record.caller, record.requestId])).toEqual([
-      ['pleo_search_companies', 'start', 'person-1', 'call-1'],
-      ['pleo_search_companies', 'finish', 'person-1', 'call-1'],
+    // The caller only as a pseudonym, and the request id our own, the same for the call's records.
+    expect(records.map(record => [record.tool, record.action, record.caller])).toEqual([
+      ['pleo_search_companies', 'start', callerPseudonym('person-1')],
+      ['pleo_search_companies', 'finish', callerPseudonym('person-1')],
     ]);
+    expect(records[0]?.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(records[1]?.requestId).toBe(records[0]?.requestId);
+    expect(JSON.stringify(records)).not.toMatch(/person-1|call-1/);
   });
 
   it('without a host policy uses the environment, like the MCP server', async () => {
@@ -480,7 +485,7 @@ describe('Pleo gateway redaction and call scopes', () => {
     expect(JSON.stringify(result)).not.toContain(KEY);
     expect(records.length).toBeGreaterThan(0);
     expect(JSON.stringify(records)).not.toContain(KEY);
-    expect(records[0]?.caller).toBe('person ‹redacted›');
+    expect(records[0]?.caller).toMatch(/^hmac:[0-9a-f]{16}$/);
   });
 
   it('redacts an unknown tool name before cutting it short, so no part of the key is left', async () => {
@@ -535,8 +540,8 @@ describe('Pleo gateway redaction and call scopes', () => {
       expect(JSON.stringify(result)).not.toContain(own);
       expect(JSON.stringify(result)).not.toContain(basic(own).slice(6));
     }
-    expect(a.records.every(record => record.caller === 'a')).toBe(true);
-    expect(b.records.every(record => record.caller === 'b')).toBe(true);
+    expect(a.records.every(record => record.caller === callerPseudonym('a'))).toBe(true);
+    expect(b.records.every(record => record.caller === callerPseudonym('b'))).toBe(true);
     expect(JSON.stringify(a.records)).not.toContain(KEY);
     expect(JSON.stringify(b.records)).not.toContain(OTHER);
   });
@@ -567,6 +572,6 @@ describe('Pleo gateway redaction and call scopes', () => {
     // The inner instance has no policy: search_companies, disabled on the outer one, runs there.
     expect(innerResult).toMatchObject({ structuredContent: { data: [{ id: 'c1' }] } });
     expect(innerFetch).toHaveBeenCalledOnce();
-    expect(outer.records.map(record => record.caller)).toEqual(['outer', 'outer']);
+    expect(outer.records.map(record => record.caller)).toEqual([callerPseudonym('outer'), callerPseudonym('outer')]);
   });
 });

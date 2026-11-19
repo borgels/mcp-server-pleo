@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
 import { formatUnknownError, redactDeep } from '../errors.js';
 import { withheldAuditRecord } from '../fallbacks.js';
@@ -16,6 +16,15 @@ export interface PleoAuditEvent {
   operationHash?: string;
   idempotencyKey?: string;
   error?: unknown;
+}
+
+/** The key of the caller pseudonyms: random per process, never written anywhere. */
+const CALLER_KEY = randomBytes(32);
+
+/** The caller as `hmac:` and 16 hex characters: the same caller gives the same pseudonym within the process. */
+export function callerPseudonym(caller: string | undefined): string | undefined {
+  if (caller === undefined || caller === '') return undefined;
+  return `hmac:${createHmac('sha256', CALLER_KEY).update(caller, 'utf8').digest('hex').slice(0, 16)}`;
 }
 
 /**
@@ -44,7 +53,8 @@ export async function writeAuditEvent(event: PleoAuditEvent): Promise<void> {
     timestamp: new Date().toISOString(),
     requestId: event.requestId ?? context.requestId ?? randomUUID(),
     tool: event.tool,
-    caller: context.caller,
+    // Only as a pseudonym: the caller is the host's text, often a mail address.
+    caller: callerPseudonym(context.caller),
     action: event.action,
     targetHash: event.target === undefined ? undefined : hashValue(JSON.stringify(event.target)),
     operationHash: event.operationHash,

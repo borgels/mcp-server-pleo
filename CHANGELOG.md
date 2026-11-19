@@ -19,6 +19,17 @@ for hosts that run one instance per tenant in a shared process.
   Bearer and Basic in any case when followed by a credential-like value, JSON
   Web Tokens anywhere, and credential-named fields whatever their value's type
   and however the name is written (`X-Api-Key`, `x-auth-token`, `api-key`).
+- Any value of 8 or more token characters after `bearer`/`basic` in any case
+  is masked (a short word such as "basic plan" is not), and so are
+  credential assignments in text (`X-Api-Key: …`, `client_secret=…`,
+  `?api_key=…`).
+- A successful answer that is not JSON (`application/json` or a `+json` type),
+  or JSON that does not parse, is refused with a fixed text instead of being
+  passed on as text.
+- The audit never holds the host's text: an unknown tool is recorded as
+  `unknown_tool` (and the answer no longer repeats its name), the caller only
+  as an HMAC pseudonym with a per-process key, and the request id is the
+  server's own.
 - Key admission: printable ASCII, at least 16 characters, no piece of 6
   characters shared with the server's own texts, its fixed fallbacks or the
   tool list. A refused key throws `GatewayConfigError` at construction with a
