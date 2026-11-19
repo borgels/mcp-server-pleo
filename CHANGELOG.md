@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.3.0 (2026-11-19)
+
+The gateway entry point (`./gateway`) in the shape of `mcp-server-template`,
+for hosts that run one instance per tenant in a shared process.
+
+### Changes
+
+- `createPleoGateway({ apiKey, baseUrl?, fetchImpl?, timeoutMs?, policy? })`:
+  `apiKey` (the standalone API key, sent as Basic auth) is required and never
+  read from the environment; `baseUrl` defaults to `https://external.pleo.io`
+  and is never read from `PLEO_BASE_URL`. The OAuth `accessToken` option is
+  gone from the gateway (the stdio and HTTP transports keep it).
+- Key admission: printable ASCII, at least 16 characters, no piece of 6
+  characters shared with the server's own texts, its fixed fallbacks or the
+  tool list. A refused key throws `GatewayConfigError` at construction with a
+  fixed text that holds no piece of it; construction errors are sealed (no
+  `cause`, no stack frames).
+- Host policy `{ enableWrites, disabledTools, audit }` per instance: with it
+  the instance reads none of `PLEO_ENABLE_WRITES`, `PLEO_POLICY_PATH` or
+  `PLEO_AUDIT_LOG`. Every call runs in its own call scope with the caller and
+  request id from the call context.
+- `pleoToolCatalog`: a deeply frozen catalog with `inputSchema` derived from
+  the zod schema the call is validated with (strict: unknown fields are
+  refused), `upstream` (method and path of every Pleo request) and `broad`.
+  The tool set is unchanged: `search_capabilities`, `check_connection`,
+  `introspect_auth`, `search_companies`, `search_employees`,
+  `search_vendors`, `list_export_jobs`, `list_export_items`, all `read`.
+- Handlers, schemas, policy and audit are shared with the MCP server; the
+  gateway no longer has its own switch over tool names.
+- Results: data redacted twice against the instance's key and Basic
+  credential, then checked at the sink (a result still holding a piece of
+  the key is withheld); the text block holds a short summary followed by the
+  data as compact JSON, equal to `structuredContent`.
+- Errors are our own texts: an HTTP failure reads
+  `Pleo API request failed with HTTP <status>` with our hint and the parsed
+  `retry-after`, never Pleo's response body, message or request id (also in
+  the MCP server). Redirects, network failures and timeouts are worded by
+  us and quote neither the address nor the cause. Failures nested in a
+  successful answer are reduced to the status and our own text.
+- `search_capabilities` in a gateway lists only the tools the instance offers.
+
+### Upgrade notes
+
+- `createPleoGateway()` without `apiKey` now throws; pass the key explicitly.
+  `PLEO_API_KEY`, `PLEO_ACCESS_TOKEN` and `PLEO_BASE_URL` are ignored by the
+  gateway.
+- Input schemas are the MCP server's: `search_vendors` requires `companyId`,
+  enums are enforced, and unknown fields are refused instead of ignored.
+- Error texts no longer include Pleo's error message, the request URL or the
+  request id.
+
 ## 0.2.0
 
 ### Changes

@@ -10,6 +10,7 @@ import {
 import { writeAuditEvent } from '../pleo/audit.js';
 import { paginationQuery, type PleoClient } from '../pleo/client.js';
 import { checkRequestPolicy, checkToolPolicy } from '../pleo/policy.js';
+import { currentOfferedTools } from '../pleo/scope.js';
 import {
   assertAllowedReadPath,
   pathParam,
@@ -70,7 +71,7 @@ export function registerPleoTools(server: McpServer, client: PleoClient): void {
     },
     async input =>
       runAuditedTool('pleo_search_capabilities', input, async () =>
-        jsonToolResult(searchCapabilities(input.query, input.limit)),
+        jsonToolResult(searchCapabilities(input.query, input.limit, currentOfferedTools())),
       ),
   );
 

@@ -1,5 +1,9 @@
 import { readEnvInteger } from '../config-env.js';
-import { PleoHttpError } from '../errors.js';
+import { limitDepth, nestedFailuresAsStatus, PleoHttpError } from '../errors.js';
+import { basicCredential, describeUrl, discardBody, isRedirect, registerSecret, SecretRedactor } from '../upstream-http.js';
+
+/** Pleo's production external API. */
+export const DEFAULT_BASE_URL = 'https://external.pleo.io';
 
 export type PleoHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
@@ -9,6 +13,17 @@ export interface PleoClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Where a missing apiKey, accessToken or baseUrl is read from. Default
+   * process.env (the MCP server). The gateway passes {}: an embedded instance
+   * never reads credentials from the environment.
+   */
+  credentialEnv?: Readonly<Record<string, string | undefined>>;
+  /**
+   * The instance's own redactor (the gateway). Without one the credentials
+   * are redacted by the MCP server's process-wide redactor.
+   */
+  redactor?: SecretRedactor;
 }
 
 export interface PleoRequest {
@@ -26,12 +41,22 @@ export class PleoClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
 
+  /** Redacts this client's credentials; the gateway runs every call with it in scope. */
+  readonly redactor: SecretRedactor;
+
   constructor(options: PleoClientOptions = {}) {
-    this.apiKey = options.apiKey ?? process.env.PLEO_API_KEY;
-    this.accessToken = options.accessToken ?? process.env.PLEO_ACCESS_TOKEN;
-    this.baseUrl = trimTrailingSlash(
-      options.baseUrl ?? process.env.PLEO_BASE_URL ?? 'https://external.pleo.io',
-    );
+    const env = options.credentialEnv ?? process.env;
+    this.apiKey = options.apiKey ?? env.PLEO_API_KEY;
+    this.accessToken = options.accessToken ?? env.PLEO_ACCESS_TOKEN;
+    this.redactor = options.redactor ?? new SecretRedactor();
+    for (const secret of [this.apiKey, this.apiKey ? basicCredential(this.apiKey) : undefined, this.accessToken]) {
+      this.redactor.addSecret(secret);
+      if (!options.redactor) {
+        // The MCP server: its errors are redacted outside any call scope.
+        registerSecret(secret);
+      }
+    }
+    this.baseUrl = trimTrailingSlash(options.baseUrl ?? env.PLEO_BASE_URL ?? DEFAULT_BASE_URL);
     assertSafeBaseUrl(this.baseUrl);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? readEnvInteger('PLEO_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 });
@@ -65,33 +90,43 @@ export class PleoClient {
       headers['Idempotency-Key'] = request.idempotencyKey;
     }
 
-    const response = await this.fetchImpl(url, {
-      method: request.method,
-      headers,
-      body: request.body === undefined ? undefined : JSON.stringify(request.body),
-      // Never follow redirects: credentials must only reach the configured API origin.
-      redirect: 'manual',
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: request.method,
+        headers,
+        body: request.body === undefined ? undefined : JSON.stringify(request.body),
+        // Never follow redirects: credentials must only reach the configured API origin.
+        redirect: 'manual',
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      throw transportError(error, request.method, this.timeoutMs);
+    }
 
-    const responseBody = await readResponseBody(response);
+    if (isRedirect(response.status)) {
+      // The Location is Pleo's text and is never quoted, and the address is configuration.
+      await discardBody(response);
+      throw new Error(
+        `Pleo API responded with a redirect (HTTP ${response.status}) for ${request.method}; ` +
+          'redirects are not followed, so credentials are never sent to another host. Check the configured base URL.',
+      );
+    }
 
     if (!response.ok) {
+      // The body is Pleo's text: it is never read into an error, a result or an audit record.
+      await discardBody(response);
       throw new PleoHttpError({
         status: response.status,
         method: request.method,
-        url,
-        payload: responseBody,
+        url: describeUrl(url),
         retryAfter: response.headers.get('retry-after') ?? undefined,
-        requestId:
-          response.headers.get('x-request-id') ??
-          response.headers.get('pleo-request-id') ??
-          undefined,
-        fallbackMessage: typeof responseBody === 'string' ? responseBody : undefined,
+        requestId: response.headers.get('x-request-id') ?? response.headers.get('pleo-request-id') ?? undefined,
       });
     }
 
-    return responseBody as T;
+    // A failure reported inside a successful answer keeps only its status and our own text.
+    return nestedFailuresAsStatus(await readResponseBody(response, request.method)) as T;
   }
 
   private authorizationHeader(): string {
@@ -100,7 +135,7 @@ export class PleoClient {
     }
 
     if (this.apiKey) {
-      return `Basic ${Buffer.from(`${this.apiKey}:`, 'utf8').toString('base64')}`;
+      return `Basic ${basicCredential(this.apiKey)}`;
     }
 
     throw new Error('Missing Pleo credentials. Set PLEO_API_KEY or PLEO_ACCESS_TOKEN in the MCP server environment.');
@@ -138,18 +173,51 @@ export function paginationQuery(input: PleoPaginationInput): Record<string, unkn
   };
 }
 
-const MAX_ERROR_BODY_BYTES = 64 * 1024;
+/** System error codes a network error may name: a fixed list, so no other text from a cause is ever shown. */
+const SHOWN_NETWORK_CODES: ReadonlySet<string> = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
 
-/**
- * Reads the response body. Redirects are refused (they are never followed),
- * and error bodies are read only up to MAX_ERROR_BODY_BYTES.
- */
-async function readResponseBody(response: Response): Promise<unknown> {
-  if (response.status >= 300 && response.status < 400) {
-    await response.body?.cancel().catch(() => undefined);
-    return 'Redirect responses are not followed, so credentials are never sent to another host.';
+/** A network failure in our own words: only a system error code from a fixed list, never a message. */
+function transportError(error: unknown, method: string, timeoutMs: number): Error {
+  // The address is configuration and is not quoted.
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return new Error(`Pleo API request timed out after ${timeoutMs} ms (${method}).`);
   }
-  const text = response.ok ? await response.text() : await readTextUpTo(response, MAX_ERROR_BODY_BYTES);
+  const code = error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
+  const shown = typeof code === 'string' && SHOWN_NETWORK_CODES.has(code) ? ` (${code})` : '';
+  return new Error(`Network error calling the Pleo API (${method})${shown}.`);
+}
+
+/** Reads a successful response body: JSON (depth-limited) when Pleo says so, else the text. */
+async function readResponseBody(response: Response, method: string): Promise<unknown> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    // Anything thrown while reading the body is replaced by our own text: its message is not ours.
+    if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error(`Pleo API response timed out while it was being read (${method}).`);
+    }
+    throw new Error(`The Pleo API response could not be read (${method}).`);
+  }
 
   if (!text) {
     return null;
@@ -161,35 +229,11 @@ async function readResponseBody(response: Response): Promise<unknown> {
   }
 
   try {
-    return JSON.parse(text) as unknown;
+    // Depth-limited at once, so nothing downstream (a handler's JSON text, the gateway) can exhaust the stack.
+    return limitDepth(JSON.parse(text) as unknown);
   } catch {
     return text;
   }
-}
-
-/** Reads at most `limit` bytes of a response body as text and discards the rest. */
-async function readTextUpTo(response: Response, limit: number): Promise<string> {
-  if (!response.body) {
-    return '';
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (total < limit) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      chunks.push(value);
-      total += value.byteLength;
-    }
-  } catch {
-    // Report what arrived before the body failed.
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-  return Buffer.concat(chunks).subarray(0, limit).toString('utf8');
 }
 
 function appendQueryValue(searchParams: URLSearchParams, key: string, value: unknown): void {
@@ -220,7 +264,8 @@ function assertSafeBaseUrl(baseUrl: string): void {
   try {
     parsed = new URL(baseUrl);
   } catch {
-    throw new Error(`PLEO_BASE_URL is not a valid URL: ${baseUrl}`);
+    // The value is not quoted: configuration is never echoed.
+    throw new Error('The Pleo base URL is not a valid URL.');
   }
 
   if (parsed.protocol === 'https:') {
@@ -232,7 +277,7 @@ function assertSafeBaseUrl(baseUrl: string): void {
   }
 
   throw new Error(
-    `Refusing to send Pleo credentials over ${parsed.protocol}//. Use https:// (loopback http:// is allowed for local mocks).`,
+    'Refusing to send Pleo credentials over a connection that is not https. Use https:// (loopback http:// is allowed for local mocks).',
   );
 }
 
