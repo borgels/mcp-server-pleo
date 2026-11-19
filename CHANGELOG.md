@@ -4,6 +4,9 @@
 
 ### Fixes
 
+- A credential assignment whose value holds both `=` and `:` (`secret=abc:def`)
+  is masked whole: the first separator ends the name. Before, a `:` later in
+  the value was taken as the separator and the text before it was kept.
 - A tool failure is written to the audit by its code again: `http_<status>`
   for an error from Pleo (so `http_429` for a rate limit) and `timeout` for a
   request or an answer that timed out. The error was turned into text before
