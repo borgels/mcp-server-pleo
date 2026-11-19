@@ -199,11 +199,18 @@ const SHOWN_NETWORK_CODES: ReadonlySet<string> = new Set([
 function transportError(error: unknown, method: string, timeoutMs: number): Error {
   // The address is configuration and is not quoted.
   if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-    return new Error(`Pleo API request timed out after ${timeoutMs} ms (${method}).`);
+    return timeoutError(`Pleo API request timed out after ${timeoutMs} ms (${method}).`);
   }
   const code = error instanceof Error ? (error.cause as { code?: unknown } | undefined)?.code : undefined;
   const shown = typeof code === 'string' && SHOWN_NETWORK_CODES.has(code) ? ` (${code})` : '';
   return new Error(`Network error calling the Pleo API (${method})${shown}.`);
+}
+
+/** Our own text for a timeout, named TimeoutError so the audit records it as `timeout`. */
+function timeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'TimeoutError';
+  return error;
 }
 
 /** Whether a content type is JSON: application/json or a +json type, with or without parameters. */
@@ -223,7 +230,7 @@ async function readResponseBody(response: Response, method: string): Promise<unk
   } catch (error) {
     // Anything thrown while reading the body is replaced by our own text: its message is not ours.
     if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
-      throw new Error(`Pleo API response timed out while it was being read (${method}).`);
+      throw timeoutError(`Pleo API response timed out while it was being read (${method}).`);
     }
     throw new Error(`The Pleo API response could not be read (${method}).`);
   }

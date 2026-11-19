@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- A tool failure is written to the audit by its code again: `http_<status>`
+  for an error from Pleo (so `http_429` for a rate limit) and `timeout` for a
+  request or an answer that timed out. The error was turned into text before
+  the audit classified it, so every failure was written as `error`. Timeouts
+  keep their text and are now named `TimeoutError`.
+
 ## 0.3.0 (2026-11-19)
 
 The gateway entry point (`./gateway`) in the shape of `mcp-server-template`,
