@@ -267,7 +267,7 @@ describe('round 3: text variants, unexpected answers and the audit', () => {
   it('masks bearer and basic in any case, and credential assignments in text, but leaves a short word', async () => {
     const texts = {
       a: `bearer ${S}`,
-      b: 'basic dXNlcjpwYXNz',
+      b: `basic ${Buffer.from('user:pass').toString('base64')}`,
       c: `X-Api-Key: ${S}`,
       d: `client_secret=${S}`,
       e: `https://x.example.test/cb?api_key=${S}&page=2`,
@@ -277,7 +277,7 @@ describe('round 3: text variants, unexpected answers and the audit', () => {
     const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl, policy: { enableWrites: false } });
     const result = await gw.callTool('search_companies', {});
     const all = JSON.stringify(result);
-    for (const secret of [S, 'dXNlcjpwYXNz']) expect(all).not.toContain(secret);
+    for (const secret of [S, Buffer.from('user:pass').toString('base64')]) expect(all).not.toContain(secret);
     expect(all).toContain('basic plan');
     expect(all).toContain('Testfirma ApS');
   });
@@ -317,5 +317,33 @@ describe('round 3: text variants, unexpected answers and the audit', () => {
     expect(records.length).toBeGreaterThan(2);
     expect(JSON.stringify(records)).not.toContain('person@example.test');
     expect(records.some(record => record.tool === 'unknown_tool')).toBe(true);
+  });
+});
+
+describe('round 4: a sink that fails at finish', () => {
+  it('records the failure as a fixed code, never its message', async () => {
+    const KEY = 'tenant-a-key-0123456789abcdef';
+    const records: Array<Record<string, unknown>> = [];
+    const gw = createPleoGateway({
+      apiKey: KEY,
+      baseUrl: BASE,
+      timeoutMs: 5_000,
+      fetchImpl: async () => json({ data: [], pagination: {} }),
+      policy: {
+        enableWrites: false,
+        audit: record => {
+          records.push(record as Record<string, unknown>);
+          if ((record as { action?: string }).action === 'finish') {
+            throw new Error('sink down: person@example.test at /srv/internal/audit.db');
+          }
+        },
+      },
+    });
+    await gw.callTool('search_companies', {}, { caller: 'person@example.test' });
+    const all = JSON.stringify(records);
+    expect(all).not.toMatch(/person@example\.test|sink down|internal/);
+    for (const record of records) {
+      if (record.error !== undefined) expect(['error', 'timeout']).toContain(String(record.error).replace(/^http_\d{3}$/, 'error'));
+    }
   });
 });

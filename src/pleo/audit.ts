@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { appendFile } from 'node:fs/promises';
-import { formatUnknownError, redactDeep } from '../errors.js';
+import { redactDeep } from '../errors.js';
 import { withheldAuditRecord } from '../fallbacks.js';
 import { leaksSecret } from '../key-admission.js';
 import { currentCallContext, currentInstancePolicy, currentRedactor } from './scope.js';
@@ -16,6 +16,19 @@ export interface PleoAuditEvent {
   operationHash?: string;
   idempotencyKey?: string;
   error?: unknown;
+}
+
+/**
+ * The audit's code for an error: the HTTP status of a Pleo error, `timeout`, or `error`. Only codes from this fixed
+ * set are written; the error's message never is.
+ */
+export function auditErrorCode(error: unknown): string {
+  const status = (error as { status?: unknown } | null)?.status;
+  if (error instanceof Error && error.name === 'PleoHttpError' && typeof status === 'number' && Number.isInteger(status)) {
+    return `http_${status}`;
+  }
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) return 'timeout';
+  return 'error';
 }
 
 /** The key of the caller pseudonyms: random per process, never written anywhere. */
@@ -63,7 +76,8 @@ export async function writeAuditEvent(event: PleoAuditEvent): Promise<void> {
     status: event.status,
     retryAfter: event.retryAfter,
     reason: event.reason,
-    error: event.error === undefined ? undefined : formatUnknownError(event.error),
+    // A fixed code, never the error's message: a failing sink or handler can carry any text (#38 review).
+    error: event.error === undefined ? undefined : auditErrorCode(event.error),
   };
   // Redacted with the shared redactDeep (the call scope's redactor, numbers and depth included), then copied
   // through JSON: plain data, without undefined fields, that the server does not keep. The second pass is the final

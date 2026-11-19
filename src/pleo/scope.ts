@@ -44,9 +44,12 @@ export interface ResolvedInstancePolicy {
 
 /** Who and which request a call belongs to, as given by the embedding host. */
 export interface CallContext {
-  /** Caller identity (for example a user id), written to audit records. */
+  /** Caller identity (for example a user id). Written to audit records only as an HMAC pseudonym. */
   caller?: string;
-  /** Request id shared by all audit records of the call. Generated when not given. */
+  /**
+   * The host's request id. Not written to audit records: in a gateway call they share a request id of the server's
+   * own, generated per call.
+   */
   requestId?: string;
 }
 

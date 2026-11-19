@@ -466,6 +466,7 @@ export const FIXED_CORPUS: readonly string[] = [
   "successful",
   "supplier",
   "suppliers",
+  "timeout",
   "too deep",
   "tool is disabled on this instance by the embedding host: ",
   "tool is not allowlisted: ",

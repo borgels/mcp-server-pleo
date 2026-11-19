@@ -30,6 +30,8 @@ for hosts that run one instance per tenant in a shared process.
   `unknown_tool` (and the answer no longer repeats its name), the caller only
   as an HMAC pseudonym with a per-process key, and the request id is the
   server's own.
+- An error in an audit record is a fixed code (`http_<status>`, `timeout` or
+  `error`), never the error's message, also when the audit sink itself fails.
 - Key admission: printable ASCII, at least 16 characters, no piece of 6
   characters shared with the server's own texts, its fixed fallbacks or the
   tool list. A refused key throws `GatewayConfigError` at construction with a

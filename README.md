@@ -299,8 +299,11 @@ The module exports:
 - `gateway.tools` (the tools enabled on the instance) and
   `gateway.callTool(name, input, { caller, requestId })`. Names are accepted
   with or without the `pleo_` prefix. Input is validated with the tool's zod
-  schema before anything is sent, and unknown fields are refused. `caller`
-  and `requestId` go into the audit records of the call.
+  schema before anything is sent, and unknown fields are refused. The audit
+  records of the call hold `caller` only as an HMAC pseudonym (a per-process
+  key) and a request id of the server's own, the same for every record of the
+  call; the host's `requestId` is not written. An error is recorded as a fixed
+  code (`http_<status>`, `timeout` or `error`), never as its message.
 - `pleoGatewayTools`: the definitions (`name` without prefix, `title`,
   `description`, `riskLevel`, `enabledByDefault`, `inputSchema` as JSON
   Schema derived from the zod schema the call is validated with).
