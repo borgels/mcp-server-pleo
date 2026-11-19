@@ -83,6 +83,17 @@ export function formatUnknownError(error: unknown): string {
 }
 
 export function redactSecrets(value: string): string {
+  return redactCredentialPatterns(redactRegisteredSecrets(value));
+}
+
+/**
+ * Credential-shaped text replaced by a marker: an Authorization header, a
+ * Bearer or Basic value, and `token=`/`apiKey:`-style assignments. Applied to
+ * every text a gateway returns, so a credential the upstream echoes (one that
+ * is not the instance's own key, such as a session token) never leaves it.
+ * Uses no state: the same input always gives the same output.
+ */
+export function redactCredentialPatterns(value: string): string {
   return SECRET_PATTERNS.reduce(
     (current, pattern) =>
       current.replace(pattern, match => {
@@ -99,7 +110,7 @@ export function redactSecrets(value: string): string {
         const key = match.split(separator)[0]?.trim() ?? 'secret';
         return `${key}${separator} [REDACTED]`;
       }),
-    redactRegisteredSecrets(value),
+    value,
   );
 }
 

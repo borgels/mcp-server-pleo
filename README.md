@@ -338,8 +338,10 @@ record refuses the call. Without `policy` the instance uses the environment,
 like the MCP server. Every call runs in a call scope of its own
 (AsyncLocalStorage), so a call made from inside another instance's call
 never inherits its policy, sink, redactor or caller. There is no
-process-wide registry of keys. The only variable a gateway still reads is
-`PLEO_TIMEOUT_MS`, and only when `timeoutMs` is not given.
+process-wide registry of keys. With `policy`, the only variable an instance
+still reads is `PLEO_TIMEOUT_MS`, and only when `timeoutMs` is not given.
+Without `policy` it also reads `PLEO_ENABLE_WRITES`, `PLEO_POLICY_PATH` and
+`PLEO_AUDIT_LOG`, as described above.
 
 **Results.** A successful result has `structuredContent` and one text block:
 a short summary, a blank line, and the same data as compact JSON. The data

@@ -12,6 +12,10 @@ for hosts that run one instance per tenant in a shared process.
   read from the environment; `baseUrl` defaults to `https://external.pleo.io`
   and is never read from `PLEO_BASE_URL`. The OAuth `accessToken` option is
   gone from the gateway (the stdio and HTTP transports keep it).
+- Results are also masked for credentials the upstream echoes that are not
+  the instance's key: Authorization headers, Bearer and Basic values,
+  `token=`-style text, and the whole value of credential-named fields
+  (`accessToken`, `refresh_token`, `client_secret`, `password` and the like).
 - Key admission: printable ASCII, at least 16 characters, no piece of 6
   characters shared with the server's own texts, its fixed fallbacks or the
   tool list. A refused key throws `GatewayConfigError` at construction with a

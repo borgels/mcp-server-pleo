@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
-import { formatUnknownError, MAX_REDACT_DEPTH } from './errors.js';
+import { formatUnknownError, MAX_REDACT_DEPTH, redactCredentialPatterns } from './errors.js';
 import { writeAuditEvent } from './pleo/audit.js';
 import { DEFAULT_BASE_URL, PleoClient, type PleoClientOptions } from './pleo/client.js';
 import {
@@ -16,7 +16,7 @@ import {
 import { registerPleoTools } from './tools/pleo.js';
 import { fixedOutputs, withheldResult } from './fallbacks.js';
 import { admitsKey, keyRefusedText, leaksSecret, sealedError } from './key-admission.js';
-import { basicCredential, SecretRedactor } from './upstream-http.js';
+import { basicCredential, REDACTION_MARKER, SecretRedactor } from './upstream-http.js';
 
 /**
  * Embeddable entry point (package export `./gateway`): an embedding host,
@@ -433,22 +433,36 @@ function buildPleoGateway(options: PleoGatewayOptions, apiKey: string, redactor:
 }
 
 /**
+ * Field names whose value is a credential whatever it looks like: the value of
+ * such a field is replaced whole, not only when it matches a pattern.
+ */
+const CREDENTIAL_FIELD =
+  /^(authorization|proxy[-_]?authorization|cookie|set[-_]?cookie|(access|refresh|id|session|bearer|auth|api)[-_]?(token|key)|token|api[-_]?secret|client[-_]?secret|secret|password|passwd)$/i;
+
+/** One text as a gateway may return it: credential-shaped text masked, then the instance's own secrets. */
+function redactText(value: string, redactor: SecretRedactor): string {
+  return redactor.redact(redactCredentialPatterns(value));
+}
+
+/**
  * A copy of a JSON value with every string, object keys included, passed
- * through the redactor, and every number or boolean whose string form would
- * be redacted replaced by the string "‹redacted›". Anything nested deeper
- * than MAX_REDACT_DEPTH is replaced, never passed on.
+ * through the credential patterns and the redactor, the value of every
+ * credential-named field (CREDENTIAL_FIELD) replaced whole, and every number
+ * or boolean whose string form would be redacted replaced by the string
+ * "‹redacted›". Anything nested deeper than MAX_REDACT_DEPTH is replaced,
+ * never passed on.
  */
 function redactDeep(value: unknown, redactor: SecretRedactor, depth = 0): unknown {
   if (depth > MAX_REDACT_DEPTH) {
     return '[nested too deep]';
   }
   if (typeof value === 'string') {
-    return redactor.redact(value);
+    return redactText(value, redactor);
   }
   if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
     // The string form of a primitive is checked too; a match becomes the string "‹redacted›", so JSON stays valid.
     const text = String(value);
-    if (redactor.redact(text) !== text) return '‹redacted›';
+    if (redactText(text, redactor) !== text) return REDACTION_MARKER;
     return typeof value === 'bigint' ? text : value;
   }
   if (typeof value !== 'object' || value === null) {
@@ -462,7 +476,12 @@ function redactDeep(value: unknown, redactor: SecretRedactor, depth = 0): unknow
     return value.map(entry => redactDeep(entry, redactor, depth + 1));
   }
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [redactor.redact(key), redactDeep(entry, redactor, depth + 1)]),
+    Object.entries(value).map(([key, entry]) => [
+      redactText(key, redactor),
+      CREDENTIAL_FIELD.test(key) && entry !== null && typeof entry !== 'object'
+        ? REDACTION_MARKER
+        : redactDeep(entry, redactor, depth + 1),
+    ]),
   );
 }
 
@@ -499,7 +518,7 @@ function normalizeResult(result: unknown, redactor: SecretRedactor, summary: str
   return {
     content: content
       .filter((entry): entry is { type: 'text'; text: string } => typeof entry.text === 'string')
-      .map(entry => ({ type: 'text' as const, text: redactor.redact(entry.text) })),
+      .map(entry => ({ type: 'text' as const, text: redactText(entry.text, redactor) })),
   };
 }
 

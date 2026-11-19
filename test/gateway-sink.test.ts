@@ -173,3 +173,42 @@ describe('failure texts', () => {
     });
   });
 });
+
+describe('credentials the upstream echoes, which are not the instance key', () => {
+  const KEY = 'tenant-a-key-0123456789abcdef';
+  const SESSION = 'opaque-session-secret-778899';
+  const echoing: typeof fetch = async url => {
+    const path = new URL(String(url)).pathname;
+    if (path === '/v1/companies') {
+      return json({
+        data: [
+          {
+            id: 'c1',
+            name: 'Testfirma ApS',
+            note: `Authorization: Bearer ${SESSION}`,
+            header: `Basic ${SESSION}`,
+            accessToken: SESSION,
+            nested: { refresh_token: SESSION, client_secret: SESSION, password: SESSION, apiKey: SESSION },
+            text: `token=${SESSION}`,
+          },
+        ],
+        pagination: { hasNextPage: false },
+      });
+    }
+    return json({ message: 'not found' }, 404);
+  };
+
+  it('are masked in structuredContent and in the text block', async () => {
+    const gw = createPleoGateway({ apiKey: KEY, baseUrl: BASE, timeoutMs: 5_000, fetchImpl: echoing, policy: { enableWrites: false } });
+    const result = await gw.callTool('search_companies', {});
+    expect(result.isError).toBeFalsy();
+    const all = JSON.stringify(result);
+    expect(all).not.toContain(SESSION);
+    expect(all).toContain('Testfirma ApS');
+    const company = (result.structuredContent as { data: Array<Record<string, unknown>> }).data[0]!;
+    expect(company.accessToken).toBe('‹redacted›');
+    expect((company.nested as Record<string, unknown>).refresh_token).toBe('‹redacted›');
+    expect(String(company.note)).toMatch(/^Authorization: \[REDACTED\]|Bearer \[REDACTED\]/);
+    expect(result.content[0]!.text).not.toContain(SESSION);
+  });
+});
