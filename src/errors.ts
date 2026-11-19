@@ -28,6 +28,10 @@ export interface PleoHttpErrorInput {
 }
 
 const SECRET_PATTERNS = [
+  // Bearer or Basic, in any case, before a value that holds the marker of an earlier redaction: the scheme word and the
+  // whole value up to a space, quote, comma or brace, whatever its length (a short tail after the marker is still part
+  // of the credential).
+  /\b(bearer|basic)\s+[^\s"',}]*‹redacted›[^\s"',}]*/gi,
   /Authorization:\s*(Bearer|Basic)\s+[^,\s}]+/gi,
   // A credential-named assignment in text: `X-Api-Key: S`, `client_secret=S`, `?api_key=S`, `"accessToken": "S"`.
   /(PLEO_API_KEY|PLEO_ACCESS_TOKEN|(?:x[-_]?)?api[-_]?(?:key|token|secret)|client[-_]?secret|(?:access|refresh|auth|id|session|bearer)[-_]?token|accessToken|apiKey|token|password|passwd|secret)["']?\s*[:=]\s*["']?[^"',\s}&]+/gi,

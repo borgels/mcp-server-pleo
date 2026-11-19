@@ -4,6 +4,8 @@
 
 ### Fixes
 
+- A Basic or Bearer value that holds the secrets' marker is masked whole,
+  whatever the length of its tail (`basic ‹redacted›abcdef`).
 - A registered secret inside a Bearer token or a JSON Web Token no longer
   leaves the rest of the token behind: credential-shaped text is masked
   before the secrets, and again after, until nothing changes, and the
