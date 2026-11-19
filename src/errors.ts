@@ -116,9 +116,9 @@ export function redactCredentialPatterns(value: string): string {
           return 'Authorization: [REDACTED]';
         }
 
-        const separator = match.includes(':') ? ':' : '=';
-        const key = match.split(separator)[0]?.trim() ?? 'secret';
-        return `${key}${separator} [REDACTED]`;
+        // The first separator ends the name: everything after it is the value, which may itself hold `:` or `=`.
+        const [, key = 'secret', separator = ':'] = /^(.*?)\s*([:=])/.exec(match) ?? [];
+        return `${key.trim()}${separator} [REDACTED]`;
       }),
     value,
   );

@@ -160,3 +160,29 @@ describe('version', () => {
     expect(PACKAGE_VERSION).toBe(pkg.version);
   });
 });
+
+describe('credential masking with = and : inside the value', () => {
+  it('masks the whole value of Basic, Bearer and credential assignments, padding included', async () => {
+    const { redactCredentialPatterns } = await import('../src/errors.js');
+    const padded1 = Buffer.from('abcd:efg').toString('base64'); // one '=' of padding
+    const padded2 = Buffer.from('abcd:ef').toString('base64'); // '==' of padding
+    expect(padded1.endsWith('=') && !padded1.endsWith('==')).toBe(true);
+    expect(padded2.endsWith('==')).toBe(true);
+    const cases: Array<[string, string]> = [
+      [`Basic ${padded1}`, padded1.slice(0, 6)],
+      [`basic ${padded2}`, padded2.slice(0, 6)],
+      ['bearer abcdefgh12345678=', 'abcdefgh'],
+      ['Bearer abcdefgh12345678==', 'abcdefgh'],
+      [`Authorization: Basic ${padded2}`, padded2.slice(0, 6)],
+      ['secret=qzx:defghij', 'qzx'],
+      ['password=qzw=ss:word', 'qzw'],
+      ['token: ab=cdefgh', 'cdefgh'],
+      ['x-api-key=qzv==', 'qzv'],
+    ];
+    for (const [text, piece] of cases) {
+      const out = redactCredentialPatterns(text);
+      expect(out, text).toContain('[REDACTED]');
+      expect(out, text).not.toContain(piece);
+    }
+  });
+});
