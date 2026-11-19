@@ -4,6 +4,10 @@
 
 ### Fixes
 
+- A registered secret inside a Bearer token or a JSON Web Token no longer
+  leaves the rest of the token behind: credential-shaped text is masked
+  before the secrets, and again after, until nothing changes, and the
+  patterns take the secrets' marker as part of a value.
 - A credential assignment whose value holds both `=` and `:` (`secret=abc:def`)
   is masked whole: the first separator ends the name. Before, a `:` later in
   the value was taken as the separator and the text before it was kept.

@@ -448,9 +448,18 @@ function isCredentialField(name: string): boolean {
   return CREDENTIAL_NAME.test(name.toLowerCase().replace(/[-_\s.]/g, ''));
 }
 
-/** One text as a gateway may return it: credential-shaped text masked, then the instance's own secrets. */
+/**
+ * One text as a gateway may return it: credential-shaped text masked, then the instance's own secrets, then the
+ * patterns again (they take the marker as part of a value), until nothing changes.
+ */
 function redactText(value: string, redactor: SecretRedactor): string {
-  return redactor.redact(redactCredentialPatterns(value));
+  let result = redactCredentialPatterns(value);
+  for (let round = 0; round < 4; round += 1) {
+    const next = redactCredentialPatterns(redactor.redact(result));
+    if (next === result) break;
+    result = next;
+  }
+  return result;
 }
 
 /**
