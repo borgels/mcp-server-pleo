@@ -347,3 +347,54 @@ describe('round 4: a sink that fails at finish', () => {
     }
   });
 });
+
+describe('the audit records a tool failure by its code', () => {
+  async function errorRecord(fetchImpl: typeof fetch, timeoutMs = 5_000): Promise<Record<string, unknown> | undefined> {
+    const records: Array<Record<string, unknown>> = [];
+    const gw = createPleoGateway({
+      apiKey: 'tenant-a-key-0123456789abcdef',
+      baseUrl: BASE,
+      timeoutMs,
+      fetchImpl,
+      policy: { enableWrites: false, audit: record => void records.push(record as Record<string, unknown>) },
+    });
+    const result = await gw.callTool('search_companies', {});
+    expect(result.isError).toBe(true);
+    return records.find(record => record.action === 'error');
+  }
+
+  it('writes http_429 for a rate limit, http_500 for a server error, never the message', async () => {
+    const r429 = await errorRecord(async () => new Response('slow down', { status: 429, headers: { 'retry-after': '3' } }));
+    expect(r429?.error).toBe('http_429');
+    const r500 = await errorRecord(async () => new Response('boom', { status: 500 }));
+    expect(r500?.error).toBe('http_500');
+    expect(JSON.stringify([r429, r500])).not.toMatch(/slow down|boom|Pleo API/);
+  });
+
+  it('writes timeout when the request times out, and when the answer times out while it is read', async () => {
+    const timedOut = async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    };
+    expect((await errorRecord(timedOut))?.error).toBe('timeout');
+
+    const slowBody: typeof fetch = async () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        text: async () => {
+          throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        },
+      }) as unknown as Response;
+    expect((await errorRecord(slowBody))?.error).toBe('timeout');
+  });
+
+  it('writes error for a network failure', async () => {
+    const down = async () => {
+      throw new TypeError('fetch failed: connect ECONNREFUSED 10.0.0.1:443');
+    };
+    const record = await errorRecord(down);
+    expect(record?.error).toBe('error');
+    expect(JSON.stringify(record)).not.toMatch(/ECONNREFUSED|10\.0\.0\.1/);
+  });
+});

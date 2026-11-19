@@ -1,6 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
-import { formatUnknownError } from '../errors.js';
 import {
   DRY_RUN_TOOL_ANNOTATIONS,
   READ_TOOL_ANNOTATIONS,
@@ -484,7 +483,8 @@ async function runAuditedTool<T>(
       action: 'error',
       target,
       status: 'error',
-      error: formatUnknownError(error),
+      // The error object itself: the audit classifies it into a fixed code (http_<status>, timeout or error).
+      error,
       ...auditOptions,
     });
     throw error;
