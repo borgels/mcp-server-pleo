@@ -1,5 +1,5 @@
 import { readEnvInteger } from '../config-env.js';
-import { limitDepth, nestedFailuresAsStatus, PleoHttpError } from '../errors.js';
+import { limitDepth, nestedFailuresAsStatus, PleoHttpError, PleoRedirectError, requestIdFrom } from '../errors.js';
 import { basicCredential, describeUrl, discardBody, isRedirect, registerSecret, SecretRedactor } from '../upstream-http.js';
 
 /** Pleo's production external API. */
@@ -107,9 +107,10 @@ export class PleoClient {
     if (isRedirect(response.status)) {
       // The Location is Pleo's text and is never quoted, and the address is configuration.
       await discardBody(response);
-      throw new Error(
+      throw new PleoRedirectError(
         `Pleo API responded with a redirect (HTTP ${response.status}) for ${request.method}; ` +
           'redirects are not followed, so credentials are never sent to another host. Check the configured base URL.',
+        { status: response.status, requestId: requestIdFrom(response.headers) },
       );
     }
 
@@ -121,7 +122,7 @@ export class PleoClient {
         method: request.method,
         url: describeUrl(url),
         retryAfter: response.headers.get('retry-after') ?? undefined,
-        requestId: response.headers.get('x-request-id') ?? response.headers.get('pleo-request-id') ?? undefined,
+        requestId: requestIdFrom(response.headers),
       });
     }
 

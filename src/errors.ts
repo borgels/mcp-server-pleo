@@ -54,8 +54,9 @@ const STATUS_HINTS: Record<number, string> = {
 
 /**
  * An HTTP error from Pleo: the status, our own hint and the parsed
- * Retry-After. Nothing of the body is kept. The request id header is kept as
- * a property for diagnostics, never in the message.
+ * Retry-After. Nothing of the body is kept. Pleo's request id is kept as a
+ * property, only in the form such ids have (see requestIdFrom), never in the
+ * message.
  */
 export class PleoHttpError extends Error {
   readonly status: number;
@@ -63,6 +64,7 @@ export class PleoHttpError extends Error {
   readonly url: string;
   /** Seconds to wait, parsed from Retry-After; undefined when absent or not a number of seconds. */
   readonly retryAfter?: string;
+  /** Pleo's own id for the request, when a response header gives one as a UUID or hex id. */
   readonly requestId?: string;
 
   constructor(input: PleoHttpErrorInput) {
@@ -81,8 +83,87 @@ export class PleoHttpError extends Error {
     this.method = input.method;
     this.url = input.url;
     this.retryAfter = retryAfter;
-    this.requestId = input.requestId;
+    this.requestId = vendorRequestId(input.requestId);
   }
+}
+
+/**
+ * A redirect from Pleo, refused (it is never followed): our own text, the status of the answer and its request id,
+ * nothing else of the response.
+ */
+export class PleoRedirectError extends Error {
+  readonly status: number;
+  /** Pleo's own id for the request, when a response header gives one as a UUID or hex id. */
+  readonly requestId?: string;
+
+  constructor(message: string, input: { status: number; requestId?: string }) {
+    super(message);
+    this.name = 'PleoRedirectError';
+    this.status = input.status;
+    this.requestId = vendorRequestId(input.requestId);
+  }
+}
+
+/**
+ * Response headers that carry the vendor's own id for a request, most specific first. Pleo's own `pleo-request-id` first, then the
+ * common list.
+ */
+export const REQUEST_ID_HEADERS: readonly string[] = [
+  'pleo-request-id',
+  'x-request-id',
+  'request-id',
+  'x-correlation-id',
+  'correlation-id',
+  'x-ms-request-id',
+  'x-amzn-requestid',
+];
+
+/**
+ * A hex id: one run of hex digits, or groups of at least four hex digits joined by single hyphens (a UUID is one),
+ * 8 to 64 characters in all. A name, a sentence or an e-mail address never fits.
+ */
+const REQUEST_ID_FORM = /^[0-9A-Fa-f]{4,}(?:-[0-9A-Fa-f]{4,})*$/;
+/** Six digits and four more: the shape of a Danish personal number. An id that holds it is dropped. */
+const PERSONAL_NUMBER_SHAPE = /\d{6}-?\d{4}/;
+
+/**
+ * The vendor's request id, only in the form such ids have (a UUID or a hex id of 8 to 64 characters), or
+ * undefined. Anything else, and an id that holds the shape of a personal number, is dropped: the value comes from
+ * the vendor and is kept only when it cannot be text.
+ */
+export function vendorRequestId(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return id.length >= 8 && id.length <= 64 && REQUEST_ID_FORM.test(id) && !PERSONAL_NUMBER_SHAPE.test(id) ? id : undefined;
+}
+
+/** The vendor's request id from the first of REQUEST_ID_HEADERS a response has in the right form, or undefined. */
+export function requestIdFrom(headers: Headers, names: readonly string[] = REQUEST_ID_HEADERS): string | undefined {
+  for (const name of names) {
+    const id = vendorRequestId(headers.get(name));
+    if (id !== undefined) return id;
+  }
+  return undefined;
+}
+
+/**
+ * Metadata about a failed call, for a host that counts failures: the HTTP status Pleo answered with and its
+ * request id. Never the response body, the vendor's error code or message, or the input.
+ */
+export interface FailureMetadata {
+  /** The HTTP status of Pleo's answer (100-599). */
+  httpStatus: number;
+  /** The vendor's own id for the request, as a UUID or hex id only. */
+  requestId?: string;
+}
+
+/** The failure metadata of an error: an HTTP error from Pleo (a refused redirect included) gives its status and request id. */
+export function failureMetadata(error: unknown): FailureMetadata | undefined {
+  if (!(error instanceof PleoHttpError) && !(error instanceof PleoRedirectError)) return undefined;
+  const status: unknown = error.status;
+  if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return undefined;
+  const requestId = vendorRequestId(error.requestId);
+  return requestId === undefined ? { httpStatus: status } : { httpStatus: status, requestId };
 }
 
 export function formatUnknownError(error: unknown): string {
