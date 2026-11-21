@@ -362,7 +362,15 @@ the parsed `retry-after` where there is one, so a host can map it by status.
 Other errors start with `Invalid input for <tool>:`,
 `Unsupported Pleo gateway tool:`, `Pleo API responded with a redirect (HTTP <status>)`,
 `Network error calling the Pleo API`, `Pleo API request timed out after`, or
-the policy refusal.
+the policy refusal. When Pleo answered with an HTTP error (a refused redirect
+included), the error result also has `failure: { httpStatus, requestId? }`:
+the status, and Pleo's request id from a response header
+(`REQUEST_ID_HEADERS` in `src/errors.ts`, `pleo-request-id` first) only when
+it is a hex id of 8 to 64 characters (one run of hex digits, or groups of
+four or more joined by single hyphens, as in a UUID) and does not hold the
+shape of a personal number. It is metadata beside the text, never in it. A
+host can count failures from it without reading their text. Never the
+response body, Pleo's error code or message.
 
 **Key admission and the sink check.** A gateway accepts only a key of
 printable ASCII (0x21-0x7E) of at least 16 characters that shares no piece

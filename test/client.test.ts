@@ -66,7 +66,7 @@ describe('PleoClient', () => {
     const fetchMock = vi.fn<typeof fetch>(async () =>
       jsonResponse({ message: 'Too many requests' }, 429, {
         'retry-after': '12',
-        'x-request-id': 'req-123',
+        'x-request-id': '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b',
       }),
     );
     const client = new PleoClient({
@@ -81,7 +81,7 @@ describe('PleoClient', () => {
       await client.get('/v1/introspect');
     } catch (error) {
       expect(error).toBeInstanceOf(PleoHttpError);
-      expect((error as PleoHttpError).requestId).toBe('req-123');
+      expect((error as PleoHttpError).requestId).toBe('3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b');
     }
   });
 
